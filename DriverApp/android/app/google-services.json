@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "549252471071",
+    "project_id": "first-mile-trial",
+    "storage_bucket": "first-mile-trial.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:549252471071:android:f70d09093732a6011fb82a",
+        "android_client_info": {
+          "package_name": "com.driverapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDtX2lU4t_c3ByB889YT2VMLwW6lw5rgyY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:549252471071:android:ea352db9a88ff02d1fb82a",
+        "android_client_info": {
+          "package_name": "com.userapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDtX2lU4t_c3ByB889YT2VMLwW6lw5rgyY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
