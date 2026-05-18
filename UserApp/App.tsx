@@ -10,6 +10,7 @@ import {
   View,
   StatusBar,
   Dimensions,
+  BackHandler,
 } from 'react-native';
 import messaging from '@react-native-firebase/messaging';
 import { API_BASE_URL, USER_ID } from './src/config';
@@ -22,8 +23,11 @@ import type { BookingData } from './src/screens/BookingScreen';
 import WaitingScreen from './src/screens/WaitingScreen';
 import DriverAcceptedScreen from './src/screens/DriverAcceptedScreen';
 import RateDriverScreen from './src/screens/RateDriverScreen';
+import LiveTrackingScreen from './src/screens/LiveTrackingScreen';
+import AddressInput from './src/components/AddressInput';
+import MapLocationPicker from './src/components/MapLocationPicker';
 
-type Screen = 'home' | 'new-request' | 'my-requests' | 'browse-companies' | 'company-detail' | 'booking' | 'waiting' | 'driver-accepted' | 'rate-driver';
+type Screen = 'home' | 'new-request' | 'my-requests' | 'browse-companies' | 'company-detail' | 'booking' | 'waiting' | 'driver-accepted' | 'rate-driver' | 'live-tracking';
 type RegistrationStatus = 'pending' | 'registered' | 'error';
 
 type RequestItem = {
@@ -65,6 +69,10 @@ const App = () => {
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
   const [acceptedDriver, setAcceptedDriver] = useState<{name: string; phone: string; vehicle: string; price: string} | null>(null);
+  const [bookingPickup, setBookingPickup] = useState('');
+  const [bookingDrop, setBookingDrop] = useState('');
+  const [showPickupMapPicker, setShowPickupMapPicker] = useState(false);
+  const [showDropMapPicker, setShowDropMapPicker] = useState(false);
 
   const fetchRequests = async (ownerIdValue: string) => {
     const response = await fetchMyRequests(ownerIdValue);
@@ -136,6 +144,50 @@ const App = () => {
       fetchRequests(ownerId);
     }
   }, [screen, ownerId]);
+
+  useEffect(() => {
+    const backAction = () => {
+      if (screen === 'home') {
+        return false; // Exit app
+      }
+      
+      switch (screen) {
+        case 'new-request':
+        case 'my-requests':
+        case 'browse-companies':
+          setScreen('home');
+          return true;
+        case 'company-detail':
+          setScreen('browse-companies');
+          return true;
+        case 'booking':
+          setScreen('company-detail');
+          return true;
+        case 'waiting':
+        case 'driver-accepted':
+          setScreen('home');
+          return true;
+        case 'rate-driver':
+          setScreen('home');
+          setAcceptedDriver(null);
+          setActiveRequestId(null);
+          setSelectedCompany(null);
+          return true;
+        case 'live-tracking':
+          setScreen('driver-accepted');
+          return true;
+        default:
+          return false;
+      }
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      backAction,
+    );
+
+    return () => backHandler.remove();
+  }, [screen]);
 
   const submitRequest = async () => {
     if (!goodsType || !weightKg || !pickupAddress || !dropAddress) {
@@ -282,28 +334,28 @@ const App = () => {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20 }}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20 }} keyboardShouldPersistTaps="handled">
         {/* Pickup input */}
-        <View style={s.searchInputContainer}>
-          <View style={s.greenDotSmall} />
-          <TextInput
-            style={s.searchInput}
+        <View style={{ zIndex: 100 }}>
+          <AddressInput
             placeholder="Pickup Address"
-            placeholderTextColor="#9CA3AF"
             value={pickupAddress}
             onChangeText={setPickupAddress}
+            dotColor="#22C55E"
+            showLocationButton={true}
+            onPickFromMap={() => setShowPickupMapPicker(true)}
           />
         </View>
 
         {/* Drop input */}
-        <View style={s.searchInputContainer}>
-          <View style={s.blackDotSmall} />
-          <TextInput
-            style={s.searchInput}
+        <View style={{ zIndex: 90 }}>
+          <AddressInput
             placeholder="Drop Address"
-            placeholderTextColor="#9CA3AF"
             value={dropAddress}
             onChangeText={setDropAddress}
+            dotColor="#1F2937"
+            showLocationButton={false}
+            onPickFromMap={() => setShowDropMapPicker(true)}
           />
         </View>
 
@@ -341,6 +393,23 @@ const App = () => {
           <Text style={s.submitBtnText}>{loading ? 'Submitting...' : '🚛  Find Transporters'}</Text>
         </TouchableOpacity>
       </ScrollView>
+
+      <MapLocationPicker
+        visible={showPickupMapPicker}
+        onClose={() => setShowPickupMapPicker(false)}
+        onConfirm={(loc) => {
+          setPickupAddress(loc.address);
+          setShowPickupMapPicker(false);
+        }}
+      />
+      <MapLocationPicker
+        visible={showDropMapPicker}
+        onClose={() => setShowDropMapPicker(false)}
+        onConfirm={(loc) => {
+          setDropAddress(loc.address);
+          setShowDropMapPicker(false);
+        }}
+      />
     </View>
   );
 
@@ -426,6 +495,8 @@ const App = () => {
   const handleBookingConfirm = async (data: BookingData) => {
     setScreen('waiting');
     setLoading(true);
+    setBookingPickup(data.pickupAddress);
+    setBookingDrop(data.dropAddress);
     const result = await createRequest(
       ownerId,
       `${data.vehicleName} shipment`,
@@ -457,8 +528,16 @@ const App = () => {
       {screen === 'booking' && selectedCompany && (
         <BookingScreen company={selectedCompany} onBack={() => setScreen('company-detail')} onConfirmBooking={handleBookingConfirm} />
       )}
-      {screen === 'waiting' && selectedCompany && (
-        <WaitingScreen onBack={() => setScreen('home')} companyName={selectedCompany.name} totalPrice={0} />
+      {screen === 'waiting' && selectedCompany && activeRequestId && (
+        <WaitingScreen 
+          onBack={() => setScreen('home')} 
+          companyName={selectedCompany.name} 
+          requestId={activeRequestId}
+          onDriverAccepted={(details) => {
+            setAcceptedDriver(details);
+            setScreen('driver-accepted');
+          }}
+        />
       )}
       {screen === 'driver-accepted' && acceptedDriver && activeRequestId && (
         <DriverAcceptedScreen
@@ -469,6 +548,7 @@ const App = () => {
           priceInr={acceptedDriver.price}
           onBack={() => setScreen('home')}
           onTripCompleted={(reqId) => { setScreen('rate-driver'); }}
+          onTrackDriver={() => setScreen('live-tracking')}
         />
       )}
       {screen === 'rate-driver' && acceptedDriver && activeRequestId && (
@@ -476,6 +556,17 @@ const App = () => {
           requestId={activeRequestId}
           driverName={acceptedDriver.name}
           onDone={() => { setScreen('home'); setAcceptedDriver(null); setActiveRequestId(null); setSelectedCompany(null); }}
+        />
+      )}
+      {screen === 'live-tracking' && acceptedDriver && activeRequestId && (
+        <LiveTrackingScreen
+          requestId={activeRequestId}
+          driverName={acceptedDriver.name}
+          driverPhone={acceptedDriver.phone}
+          pickupAddress={bookingPickup}
+          dropAddress={bookingDrop}
+          tripStatus={'matched'}
+          onBack={() => setScreen('driver-accepted')}
         />
       )}
     </SafeAreaView>

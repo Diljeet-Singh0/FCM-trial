@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Animated, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Image, Linking, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { fetchRequestDetails } from '../api';
 
 type Props = {
@@ -10,6 +10,7 @@ type Props = {
   priceInr: string;
   onBack: () => void;
   onTripCompleted: (requestId: string) => void;
+  onTrackDriver: () => void;
 };
 
 const STATUS_LABELS: Record<string, { label: string; icon: string; color: string }> = {
@@ -19,8 +20,10 @@ const STATUS_LABELS: Record<string, { label: string; icon: string; color: string
   completed: { label: 'Delivered!', icon: '🎉', color: '#16A34A' },
 };
 
-const DriverAcceptedScreen = ({ requestId, driverName, driverPhone, driverVehicle, priceInr, onBack, onTripCompleted }: Props) => {
+const DriverAcceptedScreen = ({ requestId, driverName, driverPhone, driverVehicle, priceInr, onBack, onTripCompleted, onTrackDriver }: Props) => {
   const [tripStatus, setTripStatus] = useState('matched');
+  const [builtyImage, setBuiltyImage] = useState<string | null>(null);
+  const [showBuiltyFullscreen, setShowBuiltyFullscreen] = useState(false);
   const checkAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -33,12 +36,15 @@ const DriverAcceptedScreen = ({ requestId, driverName, driverPhone, driverVehicl
       const res = await fetchRequestDetails(requestId);
       if (res.success && res.request) {
         setTripStatus(res.request.status);
+        if (res.request.builty_image) {
+          setBuiltyImage(res.request.builty_image);
+        }
         if (res.request.status === 'completed') {
           clearInterval(interval);
           setTimeout(() => onTripCompleted(requestId), 2000);
         }
       }
-    }, 5000);
+    }, 2000);
     return () => clearInterval(interval);
   }, [requestId]);
 
@@ -102,11 +108,31 @@ const DriverAcceptedScreen = ({ requestId, driverName, driverPhone, driverVehicl
             <TouchableOpacity style={s.callBtn} onPress={callDriver}>
               <Text style={s.callBtnText}>📞  Call Driver</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={s.trackBtn}>
+            <TouchableOpacity style={s.trackBtn} onPress={onTrackDriver}>
               <Text style={s.trackBtnText}>📍  Track Driver</Text>
             </TouchableOpacity>
           </View>
         </View>
+
+        {/* Builty Image Card — shown when driver uploads builty */}
+        {builtyImage && (
+          <View style={s.builtyCard}>
+            <View style={s.builtyHeader}>
+              <Text style={s.builtyTitle}>📄 Builty Receipt</Text>
+              <Text style={s.builtyBadge}>Uploaded by Driver</Text>
+            </View>
+            <TouchableOpacity onPress={() => setShowBuiltyFullscreen(true)} activeOpacity={0.8}>
+              <Image
+                source={{ uri: `data:image/jpeg;base64,${builtyImage}` }}
+                style={s.builtyThumbnail}
+                resizeMode="cover"
+              />
+              <View style={s.builtyOverlay}>
+                <Text style={s.builtyOverlayText}>Tap to view full size</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Trip Timeline */}
         <View style={s.timelineCard}>
@@ -131,6 +157,26 @@ const DriverAcceptedScreen = ({ requestId, driverName, driverPhone, driverVehicl
           })}
         </View>
       </ScrollView>
+
+      {/* Full-screen Builty Modal */}
+      <Modal visible={showBuiltyFullscreen} transparent animationType="fade">
+        <View style={s.fullscreenOverlay}>
+          <View style={s.fullscreenHeader}>
+            <TouchableOpacity onPress={() => setShowBuiltyFullscreen(false)} style={s.fullscreenCloseBtn}>
+              <Text style={s.fullscreenCloseText}>✕</Text>
+            </TouchableOpacity>
+            <Text style={s.fullscreenTitle}>Builty Receipt</Text>
+            <View style={{ width: 40 }} />
+          </View>
+          {builtyImage && (
+            <Image
+              source={{ uri: `data:image/jpeg;base64,${builtyImage}` }}
+              style={s.fullscreenImage}
+              resizeMode="contain"
+            />
+          )}
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -170,6 +216,25 @@ const s = StyleSheet.create({
   callBtnText: { color: '#FFF', textAlign: 'center', fontSize: 14, fontWeight: '700' },
   trackBtn: { flex: 1, backgroundColor: '#1A56DB', borderRadius: 12, paddingVertical: 12 },
   trackBtnText: { color: '#FFF', textAlign: 'center', fontSize: 14, fontWeight: '700' },
+
+  // ─── Builty Card ───
+  builtyCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 16, marginBottom: 12, elevation: 2, borderWidth: 1.5, borderColor: '#BBF7D0' },
+  builtyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  builtyTitle: { fontSize: 16, fontWeight: '700', color: '#111827' },
+  builtyBadge: { backgroundColor: '#DCFCE7', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
+  builtyThumbnail: { width: '100%', height: 200, borderRadius: 12, backgroundColor: '#F3F4F6' },
+  builtyOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.5)', borderBottomLeftRadius: 12, borderBottomRightRadius: 12, paddingVertical: 8 },
+  builtyOverlayText: { color: '#FFF', textAlign: 'center', fontSize: 13, fontWeight: '600' },
+
+  // ─── Full-screen Modal ───
+  fullscreenOverlay: { flex: 1, backgroundColor: '#000' },
+  fullscreenHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, paddingTop: 40, backgroundColor: 'rgba(0,0,0,0.8)' },
+  fullscreenCloseBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
+  fullscreenCloseText: { color: '#FFF', fontSize: 20, fontWeight: '600' },
+  fullscreenTitle: { flex: 1, color: '#FFF', fontSize: 17, fontWeight: '700', textAlign: 'center' },
+  fullscreenImage: { flex: 1, width: '100%' },
+
+  // ─── Timeline ───
   timelineCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 16, elevation: 2, borderWidth: 1, borderColor: '#F3F4F6' },
   timelineTitle: { fontSize: 16, fontWeight: '700', color: '#111827', marginBottom: 16 },
   timelineItem: { flexDirection: 'row', marginBottom: 20, position: 'relative' },
@@ -182,3 +247,4 @@ const s = StyleSheet.create({
 });
 
 export default DriverAcceptedScreen;
+

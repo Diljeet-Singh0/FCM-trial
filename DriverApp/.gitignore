@@ -56,6 +56,9 @@ Gemfile.lock
 .env
 .env.local
 
+# Secrets (API keys)
+src/secrets.ts
+
 # Bundle
 .bundle/
 

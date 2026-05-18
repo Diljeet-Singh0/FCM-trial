@@ -1,7 +1,11 @@
 import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, PermissionsAndroid, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
+import Geolocation from 'react-native-geolocation-service';
 import type { Company } from './BrowseCompaniesScreen';
 import { suggestVehicle, calculatePrice, AUTO_LOADING_CHARGE } from '../transporters';
+import MapLocationPicker from '../components/MapLocationPicker';
+
+import { MAPBOX_ACCESS_TOKEN } from '../secrets';
 
 type Props = {
   company: Company;
@@ -27,10 +31,54 @@ const BookingScreen = ({ company, onBack, onConfirmBooking }: Props) => {
   const [weightKg, setWeightKg] = useState('');
   const [pickupAddress, setPickupAddress] = useState('');
   const [dropAddress, setDropAddress] = useState(company.depotAddress);
+  const [isFetchingLocation, setIsFetchingLocation] = useState(false);
+  const [showMapPicker, setShowMapPicker] = useState(false);
 
   const weight = Number(weightKg) || 0;
   const vehicle = suggestVehicle(weight);
   const pricing = calculatePrice(company.ratePerKg, weight);
+
+  const getLiveLocation = async () => {
+    try {
+      setIsFetchingLocation(true);
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      );
+      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+        Alert.alert('Permission Denied', 'Location permission is required to fetch your address.');
+        setIsFetchingLocation(false);
+        return;
+      }
+
+      Geolocation.getCurrentPosition(
+        async (position) => {
+          try {
+            const response = await fetch(
+              `https://api.mapbox.com/geocoding/v5/mapbox.places/${position.coords.longitude},${position.coords.latitude}.json?access_token=${MAPBOX_ACCESS_TOKEN}&types=address,poi&limit=1`
+            );
+            const data = await response.json();
+            if (data.features && data.features.length > 0) {
+              setPickupAddress(data.features[0].place_name);
+            } else {
+              setPickupAddress(`${position.coords.latitude}, ${position.coords.longitude}`);
+            }
+          } catch (error) {
+            setPickupAddress(`${position.coords.latitude}, ${position.coords.longitude}`);
+          } finally {
+            setIsFetchingLocation(false);
+          }
+        },
+        (error) => {
+          Alert.alert('Error', 'Could not get your location: ' + error.message);
+          setIsFetchingLocation(false);
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+      );
+    } catch (err) {
+      console.warn(err);
+      setIsFetchingLocation(false);
+    }
+  };
 
   const goToStep2 = () => {
     if (!weightKg || !pickupAddress) {
@@ -78,9 +126,21 @@ const BookingScreen = ({ company, onBack, onConfirmBooking }: Props) => {
             placeholder="Enter pickup location" placeholderTextColor="#9CA3AF"
             value={pickupAddress} onChangeText={setPickupAddress} />
         </View>
-        <TouchableOpacity style={s.gpsBtn} onPress={() => setPickupAddress('RVW6+MF7, Gill, Patiala, Punjab')}>
-          <Text style={s.gpsBtnText}>📍 Use Current Location</Text>
-        </TouchableOpacity>
+        <View style={s.locationBtnRow}>
+          <TouchableOpacity style={s.gpsBtn} onPress={getLiveLocation} disabled={isFetchingLocation}>
+            {isFetchingLocation ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <ActivityIndicator size="small" color="#1A56DB" style={{ marginRight: 6 }} />
+                <Text style={s.gpsBtnText}>Fetching...</Text>
+              </View>
+            ) : (
+              <Text style={s.gpsBtnText}>📍 Current Location</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity style={s.mapPickBtn} onPress={() => setShowMapPicker(true)}>
+            <Text style={s.mapPickBtnText}>📌 Pick on Map</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={s.inputGroup}>
@@ -104,32 +164,31 @@ const BookingScreen = ({ company, onBack, onConfirmBooking }: Props) => {
       <Text style={s.stepLabel}>Step 2 of 2</Text>
       <Text style={s.stepTitle}>Vehicle & Price</Text>
 
-      {/* Suggested Vehicle */}
+      {/* Confirmation Message */}
       <View style={s.vehicleCard}>
-        <Text style={s.vehicleIcon}>{vehicle.icon}</Text>
+        <Text style={s.vehicleIcon}>✅</Text>
         <View style={{ flex: 1, marginLeft: 14 }}>
-          <Text style={s.vehicleLabel}>Suggested Vehicle</Text>
-          <Text style={s.vehicleName}>{vehicle.name}</Text>
-          <Text style={s.vehicleCap}>Up to {vehicle.maxWeightKg.toLocaleString()} kg</Text>
+          <Text style={s.vehicleLabel}>Status</Text>
+          <Text style={s.vehicleName}>Your pickup is confirmed</Text>
+          <Text style={s.vehicleCap}>It's on us what we send</Text>
         </View>
-        <View style={s.autoTag}><Text style={s.autoTagText}>Auto</Text></View>
       </View>
 
-      {/* Price Breakdown */}
+      {/* Pricing Model */}
       <View style={s.priceCard}>
-        <Text style={s.priceTitle}>Price Breakdown</Text>
+        <Text style={s.priceTitle}>Pricing Details</Text>
         <View style={s.priceRow}>
-          <Text style={s.priceLabel}>Company charges ({company.ratePerKg}/kg × {weight} kg)</Text>
-          <Text style={s.priceValue}>₹{pricing.companyCharge}</Text>
+          <Text style={s.priceLabel}>Rate per km</Text>
+          <Text style={s.priceValue}>₹45</Text>
         </View>
         <View style={s.priceRow}>
-          <Text style={s.priceLabel}>Auto-rickshaw loading charge</Text>
-          <Text style={s.priceValue}>₹{AUTO_LOADING_CHARGE}</Text>
+          <Text style={s.priceLabel}>Minimum Charge</Text>
+          <Text style={s.priceValue}>₹200</Text>
         </View>
         <View style={s.priceDivider} />
         <View style={s.priceRow}>
-          <Text style={s.totalLabel}>Total</Text>
-          <Text style={s.totalValue}>₹{pricing.total}</Text>
+          <Text style={s.priceLabel}>Waiting Charges (First 15 min free)</Text>
+          <Text style={s.priceValue}>₹50 / 30 min</Text>
         </View>
       </View>
 
@@ -143,7 +202,7 @@ const BookingScreen = ({ company, onBack, onConfirmBooking }: Props) => {
       </View>
 
       <TouchableOpacity style={s.bookBtn} onPress={confirmBooking}>
-        <Text style={s.bookBtnText}>Book Now — ₹{pricing.total}</Text>
+        <Text style={s.bookBtnText}>Book Now</Text>
       </TouchableOpacity>
 
       <TouchableOpacity style={s.backStep} onPress={() => setStep(1)}>
@@ -162,6 +221,15 @@ const BookingScreen = ({ company, onBack, onConfirmBooking }: Props) => {
         <View style={{ width: 40 }} />
       </View>
       {step === 1 ? renderStep1() : renderStep2()}
+
+      <MapLocationPicker
+        visible={showMapPicker}
+        onClose={() => setShowMapPicker(false)}
+        onConfirm={(loc) => {
+          setPickupAddress(loc.address);
+          setShowMapPicker(false);
+        }}
+      />
     </View>
   );
 };
@@ -179,8 +247,11 @@ const s = StyleSheet.create({
   inputRow: { flexDirection: 'row', alignItems: 'center' },
   greenDot: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#22C55E', borderWidth: 2, borderColor: '#BBF7D0' },
   blackDot: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#1F2937' },
-  gpsBtn: { alignSelf: 'flex-start', marginTop: 6, backgroundColor: '#EEF2FF', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
+  gpsBtn: { backgroundColor: '#EEF2FF', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
   gpsBtnText: { fontSize: 13, fontWeight: '600', color: '#1A56DB' },
+  locationBtnRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
+  mapPickBtn: { backgroundColor: '#F0FDF4', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#BBF7D0' },
+  mapPickBtnText: { fontSize: 13, fontWeight: '600', color: '#16A34A' },
   prefillNote: { fontSize: 11, color: '#9CA3AF', marginTop: 4, marginLeft: 24 },
   nextBtn: { backgroundColor: '#1A56DB', borderRadius: 14, paddingVertical: 16, marginTop: 10 },
   nextBtnText: { color: '#FFF', textAlign: 'center', fontSize: 16, fontWeight: '700' },

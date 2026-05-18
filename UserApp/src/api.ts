@@ -118,3 +118,17 @@ export const rateTrip = async (requestId: string, rating: number) => {
   }
 };
 
+export const fetchDriverLocation = async (requestId: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/driver-location/${requestId}`);
+    const data = await response.json();
+    return {
+      success: data.success,
+      location: data.location ?? null,
+      error: data.error,
+    };
+  } catch (error: any) {
+    return { success: false, location: null, error: error.message };
+  }
+};
+

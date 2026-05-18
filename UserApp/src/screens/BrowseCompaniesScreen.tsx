@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View, ActivityIndicator } from 'react-native';
-import { fetchTransportCompanies } from '../api';
+import React from 'react';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { TRANSPORT_COMPANIES } from '../transporters';
 
 type Company = {
   id: string; name: string; location: string; ratePerKg: number;
@@ -14,16 +14,7 @@ type Props = {
 };
 
 const BrowseCompaniesScreen = ({ onBack, onSelectCompany }: Props) => {
-  const [companies, setCompanies] = useState<Company[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    (async () => {
-      const res = await fetchTransportCompanies();
-      if (res.success) setCompanies(res.companies);
-      setLoading(false);
-    })();
-  }, []);
+  const companies: Company[] = TRANSPORT_COMPANIES;
 
   const renderStars = (rating: number) => {
     const full = Math.floor(rating);
@@ -49,10 +40,7 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany }: Props) => {
         <Text style={{ fontSize: 28 }}>🚛</Text>
       </View>
 
-      {loading ? (
-        <ActivityIndicator size="large" color="#1A56DB" style={{ marginTop: 40 }} />
-      ) : (
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }}>
           {companies.map((c) => (
             <TouchableOpacity key={c.id} style={s.card} onPress={() => onSelectCompany(c)} activeOpacity={0.7}>
               <View style={s.cardTop}>
@@ -91,7 +79,6 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany }: Props) => {
             </TouchableOpacity>
           ))}
         </ScrollView>
-      )}
     </View>
   );
 };

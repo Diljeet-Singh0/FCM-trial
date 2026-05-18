@@ -91,3 +91,41 @@ export const updateTripStatus = async (
   }
 };
 
+export const updateDriverLocation = async (
+  requestId: string,
+  transporterId: string,
+  latitude: number,
+  longitude: number,
+  heading: number,
+) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/update-location`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId, transporterId, latitude, longitude, heading }),
+    });
+    const data = await response.json();
+    return { success: data.success, error: data.error };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const uploadBuilty = async (
+  requestId: string,
+  transporterId: string,
+  builtyImage: string, // base64-encoded image
+) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/upload-builty`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId, transporterId, builtyImage }),
+    });
+    const data = await response.json();
+    return { success: data.success, error: data.error };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+

@@ -638,6 +638,161 @@ app.get('/gozo/request-details/:requestId', async (req, res) => {
   }
 });
 
+// ─── Driver Live Location ───
+app.post('/gozo/update-location', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) {
+      return;
+    }
+
+    const { requestId, transporterId, latitude, longitude, heading } = req.body;
+    if (!requestId || !transporterId || latitude == null || longitude == null) {
+      return res.status(400).json({ success: false, error: 'Missing requestId, transporterId, latitude, or longitude' });
+    }
+
+    // Verify the request belongs to this transporter
+    const { data: requestRow, error: requestLookupError } = await supabase
+      .from('requests')
+      .select('id, transporter_id, status')
+      .eq('id', requestId)
+      .single();
+
+    if (requestLookupError) {
+      throw requestLookupError;
+    }
+
+    if (requestRow.transporter_id !== transporterId) {
+      return res.status(403).json({ success: false, error: 'This request is not assigned to you' });
+    }
+
+    // Update driver location
+    const { error: updateError } = await supabase
+      .from('requests')
+      .update({
+        driver_lat: Number(latitude),
+        driver_lng: Number(longitude),
+        driver_heading: Number(heading) || 0,
+      })
+      .eq('id', requestId);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[GoZo] update-location error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/gozo/driver-location/:requestId', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) {
+      return;
+    }
+
+    const { requestId } = req.params;
+
+    const { data: requestRow, error: requestError } = await supabase
+      .from('requests')
+      .select('driver_lat, driver_lng, driver_heading, status, pickup_address, drop_address')
+      .eq('id', requestId)
+      .single();
+
+    if (requestError) {
+      throw requestError;
+    }
+
+    res.json({
+      success: true,
+      location: {
+        latitude: requestRow.driver_lat,
+        longitude: requestRow.driver_lng,
+        heading: requestRow.driver_heading || 0,
+        status: requestRow.status,
+        pickupAddress: requestRow.pickup_address,
+        dropAddress: requestRow.drop_address,
+      },
+    });
+  } catch (error) {
+    console.error('[GoZo] driver-location error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Upload Builty & Complete Delivery ───
+app.post('/gozo/upload-builty', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) {
+      return;
+    }
+
+    const { requestId, transporterId, builtyImage } = req.body;
+    if (!requestId || !transporterId || !builtyImage) {
+      return res.status(400).json({ success: false, error: 'Missing requestId, transporterId, or builtyImage' });
+    }
+
+    // Verify the request belongs to this transporter
+    const { data: requestRow, error: requestLookupError } = await supabase
+      .from('requests')
+      .select('id, owner_id, transporter_id, status')
+      .eq('id', requestId)
+      .single();
+
+    if (requestLookupError) {
+      throw requestLookupError;
+    }
+
+    if (requestRow.transporter_id !== transporterId) {
+      return res.status(403).json({ success: false, error: 'This request is not assigned to you' });
+    }
+
+    // Store builty image and mark as completed
+    const { error: updateError } = await supabase
+      .from('requests')
+      .update({
+        builty_image: builtyImage,
+        status: 'completed'
+      })
+      .eq('id', requestId);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    // Notify the owner that delivery is completed with builty
+    const { data: ownerRow, error: ownerError } = await supabase
+      .from('users')
+      .select('fcm_token')
+      .eq('id', requestRow.owner_id)
+      .single();
+
+    if (!ownerError && admin.apps.length && ownerRow?.fcm_token) {
+      await admin.messaging().send({
+        token: ownerRow.fcm_token,
+        notification: {
+          title: '✅ Delivery Completed!',
+          body: 'Your goods have been delivered. Builty photo is available.'
+        },
+        data: {
+          requestId: requestRow.id,
+          type: 'TRIP_STATUS_UPDATE',
+          status: 'completed',
+          builtyAvailable: 'true'
+        },
+        android: { priority: 'high' }
+      });
+    }
+
+    console.log(`[GoZo] Builty uploaded and delivery completed: requestId=${requestId}`);
+    res.json({ success: true, status: 'completed' });
+  } catch (error) {
+    console.error('[GoZo] upload-builty error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.get('/gozo/health', async (req, res) => {
   let supabaseConnected = false;
   if (supabase) {
