@@ -49,6 +49,54 @@ export const registerUser = async (
   }
 };
 
+export const loginUser = async (phone: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
+    });
+    return await response.json();
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const verifyOtp = async (phone: string, otp: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/auth/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, otp }),
+    });
+    return await response.json();
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const signupUser = async (params: {
+  phone: string;
+  name: string;
+  role: GozoUserRole;
+  fcmToken?: string;
+  factory_name?: string;
+  factory_address?: string;
+  factory_lat?: number;
+  factory_lng?: number;
+}) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    return await response.json();
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
 export const createRequest = async (
   ownerId: string,
   goodsType: string,

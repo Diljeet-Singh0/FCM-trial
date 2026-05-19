@@ -1,4 +1,5 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const https = require('https');
 
 // Use Supabase's pg-meta API to run raw SQL via the service role key
@@ -11,6 +12,8 @@ const projectRef = new URL(SUPABASE_URL).hostname.split('.')[0];
 const sql = `
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS transporter_id UUID REFERENCES users(id);
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS accepted_price NUMERIC(10,2);
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS builty_image TEXT;
+NOTIFY pgrst, 'reload schema';
 `;
 
 const postData = JSON.stringify({ query: sql });

@@ -11,10 +11,13 @@ import {
   StatusBar,
   Dimensions,
   BackHandler,
+  ActivityIndicator,
 } from 'react-native';
 import messaging from '@react-native-firebase/messaging';
-import { API_BASE_URL, USER_ID } from './src/config';
-import { createRequest, fetchMyRequests, registerUser } from './src/api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_BASE_URL } from './src/config';
+import { createRequest, fetchMyRequests } from './src/api';
+import AuthScreens from './src/screens/AuthScreens';
 import BrowseCompaniesScreen from './src/screens/BrowseCompaniesScreen';
 import type { Company } from './src/screens/BrowseCompaniesScreen';
 import CompanyDetailScreen from './src/screens/CompanyDetailScreen';
@@ -26,8 +29,9 @@ import RateDriverScreen from './src/screens/RateDriverScreen';
 import LiveTrackingScreen from './src/screens/LiveTrackingScreen';
 import AddressInput from './src/components/AddressInput';
 import MapLocationPicker from './src/components/MapLocationPicker';
+import OrderDetailScreen from './src/screens/OrderDetailScreen';
 
-type Screen = 'home' | 'new-request' | 'my-requests' | 'browse-companies' | 'company-detail' | 'booking' | 'waiting' | 'driver-accepted' | 'rate-driver' | 'live-tracking';
+type Screen = 'home' | 'new-request' | 'my-requests' | 'browse-companies' | 'company-detail' | 'booking' | 'waiting' | 'driver-accepted' | 'rate-driver' | 'live-tracking' | 'order-detail';
 type RegistrationStatus = 'pending' | 'registered' | 'error';
 
 type RequestItem = {
@@ -55,10 +59,10 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const App = () => {
   const [screen, setScreen] = useState<Screen>('home');
-  const [ownerId, setOwnerId] = useState<string>(USER_ID);
+  const [ownerId, setOwnerId] = useState<string | null>(null);
   const [requests, setRequests] = useState<RequestItem[]>([]);
-  const [registrationStatus, setRegistrationStatus] = useState<RegistrationStatus>('pending');
   const [loading, setLoading] = useState(false);
+  const [isAppReady, setIsAppReady] = useState(false);
 
   const [goodsType, setGoodsType] = useState('');
   const [weightKg, setWeightKg] = useState('');
@@ -73,6 +77,7 @@ const App = () => {
   const [bookingDrop, setBookingDrop] = useState('');
   const [showPickupMapPicker, setShowPickupMapPicker] = useState(false);
   const [showDropMapPicker, setShowDropMapPicker] = useState(false);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
 
   const fetchRequests = async (ownerIdValue: string) => {
     const response = await fetchMyRequests(ownerIdValue);
@@ -86,35 +91,17 @@ const App = () => {
   useEffect(() => {
     const bootstrap = async () => {
       try {
-        setRegistrationStatus('pending');
-        const authStatus = await messaging().requestPermission();
-        const enabled =
-          authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
-          authStatus === messaging.AuthorizationStatus.PROVISIONAL;
-
-        if (!enabled) {
-          setRegistrationStatus('error');
-          return;
+        const storedId = await AsyncStorage.getItem('gozo_owner_id');
+        if (storedId) {
+          setOwnerId(storedId);
         }
-
-        const fcmToken = await messaging().getToken();
-        const registration = await registerUser('Owner One', '9999999991', 'owner', fcmToken);
-        if (registration.success && registration.userId) {
-          setOwnerId(registration.userId);
-          setRegistrationStatus('registered');
-        } else {
-          setRegistrationStatus('error');
-        }
-      } catch (error) {
-        setRegistrationStatus('error');
+      } catch (e) {
+        console.warn('Failed to load session', e);
+      } finally {
+        setIsAppReady(true);
       }
     };
-
     bootstrap();
-
-    const unsubscribeTokenRefresh = messaging().onTokenRefresh(async (newToken) => {
-      await registerUser('Owner One', '9999999991', 'owner', newToken);
-    });
 
     const unsubscribeMessage = messaging().onMessage(async (remoteMessage) => {
       if (remoteMessage.data?.type === 'REQUEST_ACCEPTED') {
@@ -124,7 +111,7 @@ const App = () => {
         const dVehicle = readDataString(remoteMessage.data.driverVehicle, '');
         setAcceptedDriver({ name: dName, phone: dPhone, vehicle: dVehicle, price: priceInr });
         setScreen('driver-accepted');
-        fetchRequests(ownerId);
+        if (ownerId) fetchRequests(ownerId);
       } else if (remoteMessage.data?.type === 'TRIP_STATUS_UPDATE') {
         const status = readDataString(remoteMessage.data.status, '');
         if (status === 'completed') {
@@ -134,13 +121,12 @@ const App = () => {
     });
 
     return () => {
-      unsubscribeTokenRefresh();
       unsubscribeMessage();
     };
   }, []);
 
   useEffect(() => {
-    if (screen === 'my-requests') {
+    if (screen === 'my-requests' && ownerId) {
       fetchRequests(ownerId);
     }
   }, [screen, ownerId]);
@@ -156,6 +142,9 @@ const App = () => {
         case 'my-requests':
         case 'browse-companies':
           setScreen('home');
+          return true;
+        case 'order-detail':
+          setScreen('my-requests');
           return true;
         case 'company-detail':
           setScreen('browse-companies');
@@ -190,7 +179,7 @@ const App = () => {
   }, [screen]);
 
   const submitRequest = async () => {
-    if (!goodsType || !weightKg || !pickupAddress || !dropAddress) {
+    if (!goodsType || !weightKg || !pickupAddress || !dropAddress || !ownerId) {
       Alert.alert('Missing Fields', 'Please fill all shipment details.');
       return;
     }
@@ -220,6 +209,21 @@ const App = () => {
     }
   };
 
+  const handleLogout = async () => {
+    Alert.alert('Logout', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { 
+        text: 'Logout', 
+        style: 'destructive',
+        onPress: async () => {
+          await AsyncStorage.removeItem('gozo_owner_id');
+          setOwnerId(null);
+          setScreen('home');
+        }
+      }
+    ]);
+  };
+
   // ─── Bottom Tab Bar ───
   const BottomTabBar = () => (
     <View style={s.tabBar}>
@@ -235,9 +239,9 @@ const App = () => {
         <Text style={s.tabIcon}>💳</Text>
         <Text style={s.tabLabel}>Payments</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={s.tabItem} onPress={() => {}}>
+      <TouchableOpacity style={s.tabItem} onPress={handleLogout}>
         <Text style={s.tabIcon}>👤</Text>
-        <Text style={[s.tabLabel]}>Account</Text>
+        <Text style={s.tabLabel}>Logout</Text>
       </TouchableOpacity>
     </View>
   );
@@ -250,18 +254,9 @@ const App = () => {
         <View style={s.blueHeader}>
           <View style={s.headerRow}>
             <Text style={s.logoText}>GoZo</Text>
-            <View style={s.settingsBtn}>
-              <Text style={{ fontSize: 18 }}>⚙️</Text>
-            </View>
-          </View>
-          {/* Status badge */}
-          <View style={s.statusChip}>
-            <View style={[s.statusDot, {
-              backgroundColor: registrationStatus === 'registered' ? '#4CAF50' : registrationStatus === 'error' ? '#F44336' : '#FF9800'
-            }]} />
-            <Text style={s.statusChipText}>
-              {registrationStatus === 'registered' ? 'Connected' : registrationStatus === 'error' ? 'Error' : 'Connecting...'}
-            </Text>
+            <TouchableOpacity style={s.settingsBtn} onPress={handleLogout}>
+              <Text style={{ fontSize: 18 }}>🚪</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -439,7 +434,7 @@ const App = () => {
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
         {requests.map((item) => (
-          <View key={item.id} style={s.orderCard}>
+          <TouchableOpacity key={item.id} style={s.orderCard} onPress={() => { setSelectedOrderId(item.id); setScreen('order-detail'); }} activeOpacity={0.7}>
             {/* Status pill */}
             <View style={[s.orderStatusPill, { backgroundColor: statusColorMap[item.status] ?? '#607D8B' }]}>
               <Text style={s.orderStatusText}>{item.status === 'matched' ? '✓ Matched' : item.status.toUpperCase()}</Text>
@@ -473,7 +468,11 @@ const App = () => {
                 <Text style={s.matchedBannerText}>✅ Matched at ₹{item.accepted_price}</Text>
               </View>
             )}
-          </View>
+
+            <View style={s.viewDetailsRow}>
+              <Text style={s.viewDetailsText}>View Details  →</Text>
+            </View>
+          </TouchableOpacity>
         ))}
         {requests.length === 0 && (
           <View style={s.emptyState}>
@@ -493,6 +492,7 @@ const App = () => {
   };
 
   const handleBookingConfirm = async (data: BookingData) => {
+    if (!ownerId) return;
     setScreen('waiting');
     setLoading(true);
     setBookingPickup(data.pickupAddress);
@@ -512,6 +512,21 @@ const App = () => {
       setScreen('home');
     }
   };
+
+  if (!isAppReady) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#1A56DB', justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color="#FFF" />
+      </View>
+    );
+  }
+
+  if (!ownerId) {
+    return <AuthScreens onLoginSuccess={async (id) => {
+      await AsyncStorage.setItem('gozo_owner_id', id);
+      setOwnerId(id);
+    }} />;
+  }
 
   return (
     <SafeAreaView style={s.container}>
@@ -556,6 +571,12 @@ const App = () => {
           requestId={activeRequestId}
           driverName={acceptedDriver.name}
           onDone={() => { setScreen('home'); setAcceptedDriver(null); setActiveRequestId(null); setSelectedCompany(null); }}
+        />
+      )}
+      {screen === 'order-detail' && selectedOrderId && (
+        <OrderDetailScreen
+          requestId={selectedOrderId}
+          onBack={() => setScreen('my-requests')}
         />
       )}
       {screen === 'live-tracking' && acceptedDriver && activeRequestId && (
@@ -661,6 +682,8 @@ const s = StyleSheet.create({
   emptyState: { alignItems: 'center', marginTop: 60 },
   emptyStateText: { fontSize: 18, fontWeight: '700', color: '#374151', marginTop: 12 },
   emptyStateSub: { fontSize: 14, color: '#9CA3AF', marginTop: 4, textAlign: 'center' },
+  viewDetailsRow: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 12, alignItems: 'flex-end' },
+  viewDetailsText: { fontSize: 13, fontWeight: '700', color: '#1A56DB' },
 });
 
 export default App;

@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -149,8 +149,19 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
       const data = JSON.parse(event.nativeEvent.data);
       if (data.type === 'center_changed') {
         setCoords({ lat: data.lat, lng: data.lng });
-        setAddress(data.address || 'Resolving address...');
-        setIsGeocoding(data.geocoding || false);
+        if (data.geocoding) {
+          // Geocoding in progress — only update address if we don't have one yet
+          if (data.address) {
+            setAddress(data.address);
+          } else if (!address) {
+            setAddress('Resolving address...');
+          }
+          setIsGeocoding(true);
+        } else {
+          // Geocoding complete — update with final address
+          setAddress(data.address || `${data.lat.toFixed(5)}, ${data.lng.toFixed(5)}`);
+          setIsGeocoding(false);
+        }
       } else if (data.type === 'map_loaded') {
         setIsLoading(false);
       }
@@ -167,7 +178,7 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
     }
   };
 
-  const mapHTML = `
+  const mapHTML = useMemo(() => `
 <!DOCTYPE html>
 <html>
 <head>
@@ -176,7 +187,7 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
 <link href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet" />
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { width: 100vw; height: 100vh; overflow: hidden; }
+  body { width: 100vw; height: 100vh; overflow: hidden; touch-action: none; }
   #map { width: 100%; height: 100%; }
 
   /* Center pin */
@@ -187,6 +198,7 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
     transform: translate(-50%, -100%);
     z-index: 10;
     pointer-events: none;
+    will-change: transform;
     transition: transform 0.15s ease;
   }
   .center-pin.dragging {
@@ -206,6 +218,7 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
     height: 6px;
     background: rgba(0,0,0,0.25);
     border-radius: 50%;
+    will-change: width, height, opacity;
     transition: all 0.15s ease;
   }
   .center-pin.dragging .pin-shadow {
@@ -235,6 +248,11 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
 <script>
   mapboxgl.accessToken = '${MAPBOX_TOKEN}';
   let geocodeTimeout = null;
+  let isDragging = false;
+  let geocodeGeneration = 0;
+  let lastResolvedAddr = '';
+  let lastLat = null;
+  let lastLng = null;
   const pinEl = document.getElementById('centerPin');
 
   const map = new mapboxgl.Map({
@@ -243,36 +261,58 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
     center: [75.78, 30.78],
     zoom: 14,
     attributionControl: false,
+    fadeDuration: 0,
   });
 
   map.on('load', function() {
     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'map_loaded' }));
-    // Reverse geocode initial center
-    reverseGeocode(map.getCenter().lat, map.getCenter().lng);
+    const c = map.getCenter();
+    lastLat = c.lat;
+    lastLng = c.lng;
+    doGeocode(c.lat, c.lng);
   });
 
   map.on('movestart', function() {
+    isDragging = true;
     pinEl.classList.add('dragging');
+    if (geocodeTimeout) clearTimeout(geocodeTimeout);
+    geocodeGeneration++;
   });
 
   map.on('moveend', function() {
+    isDragging = false;
     pinEl.classList.remove('dragging');
     const center = map.getCenter();
-    reverseGeocode(center.lat, center.lng);
+    
+    if (lastLat !== null && lastLng !== null) {
+      const dLat = Math.abs(center.lat - lastLat);
+      const dLng = Math.abs(center.lng - lastLng);
+      // If the map just resized without panning, don't re-geocode
+      if (dLat < 0.00001 && dLng < 0.00001) return;
+    }
+    lastLat = center.lat;
+    lastLng = center.lng;
+
+    doGeocode(center.lat, center.lng);
   });
 
-  function reverseGeocode(lat, lng) {
+  function doGeocode(lat, lng) {
     if (geocodeTimeout) clearTimeout(geocodeTimeout);
-    // Send immediate update with geocoding=true
+    geocodeGeneration++;
+    const myGen = geocodeGeneration;
+
+    // Send coordinates immediately but keep the last known address
+    // so the UI doesn't flash "Resolving..." on every micro-move
     window.ReactNativeWebView.postMessage(JSON.stringify({
       type: 'center_changed',
       lat: lat,
       lng: lng,
-      address: '',
+      address: lastResolvedAddr || '',
       geocoding: true,
     }));
 
     geocodeTimeout = setTimeout(async function() {
+      if (isDragging || myGen !== geocodeGeneration) return;
       try {
         const res = await fetch(
           'https://api.mapbox.com/geocoding/v5/mapbox.places/' +
@@ -280,10 +320,12 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
           '.json?access_token=' + mapboxgl.accessToken + '&types=address,poi,place,locality,neighborhood&limit=1'
         );
         const data = await res.json();
+        if (isDragging || myGen !== geocodeGeneration) return;
         let addr = lat.toFixed(5) + ', ' + lng.toFixed(5);
         if (data.features && data.features.length > 0) {
           addr = data.features[0].place_name;
         }
+        lastResolvedAddr = addr;
         window.ReactNativeWebView.postMessage(JSON.stringify({
           type: 'center_changed',
           lat: lat,
@@ -292,20 +334,25 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
           geocoding: false,
         }));
       } catch (e) {
+        if (isDragging || myGen !== geocodeGeneration) return;
+        const fallback = lat.toFixed(5) + ', ' + lng.toFixed(5);
+        lastResolvedAddr = fallback;
         window.ReactNativeWebView.postMessage(JSON.stringify({
           type: 'center_changed',
           lat: lat,
           lng: lng,
-          address: lat.toFixed(5) + ', ' + lng.toFixed(5),
+          address: fallback,
           geocoding: false,
         }));
       }
-    }, 300);
+    }, 700);
   }
 </script>
 </body>
 </html>
-  `;
+  `, []);
+
+  const webViewSource = useMemo(() => ({ html: mapHTML }), [mapHTML]);
 
   if (!visible) return null;
 
@@ -369,13 +416,18 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
         <View style={s.mapContainer}>
           <WebView
             ref={webViewRef}
-            source={{ html: mapHTML }}
+            source={webViewSource}
             style={s.webview}
             javaScriptEnabled
             domStorageEnabled
             onMessage={handleWebViewMessage}
             scrollEnabled={false}
             overScrollMode="never"
+            androidLayerType="hardware"
+            renderToHardwareTextureAndroid
+            nestedScrollEnabled={false}
+            cacheEnabled
+            startInLoadingState={false}
           />
 
           {/* Loading overlay */}
@@ -398,16 +450,18 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
             <View style={s.addressDot} />
             <View style={s.addressContent}>
               <Text style={s.addressLabel}>Selected Location</Text>
-              {isGeocoding ? (
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <ActivityIndicator size="small" color="#1A56DB" style={{ marginRight: 8 }} />
-                  <Text style={s.addressResolving}>Resolving address...</Text>
-                </View>
-              ) : (
-                <Text style={s.addressText} numberOfLines={2}>
-                  {address || 'Move the map to select a location'}
-                </Text>
-              )}
+              <View style={s.addressTextWrapper}>
+                {isGeocoding ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <ActivityIndicator size="small" color="#1A56DB" style={{ marginRight: 8 }} />
+                    <Text style={s.addressResolving}>Resolving address...</Text>
+                  </View>
+                ) : (
+                  <Text style={s.addressText} numberOfLines={2}>
+                    {address || 'Move the map to select a location'}
+                  </Text>
+                )}
+              </View>
             </View>
           </View>
           <TouchableOpacity
@@ -430,46 +484,39 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
 const s = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F0F4F8',
   },
 
   // Search bar
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 8 : 52,
-    paddingBottom: 10,
-    backgroundColor: '#FFFFFF',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    paddingHorizontal: 14,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 52,
+    paddingBottom: 12,
+    backgroundColor: '#1A56DB',
     zIndex: 20,
   },
   closeBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: 'rgba(255,255,255,0.18)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 10,
   },
   closeBtnText: {
     fontSize: 22,
-    color: '#111827',
-    fontWeight: '300',
+    color: '#FFFFFF',
+    fontWeight: '400',
   },
   searchInputWrap: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F9FAFB',
+    backgroundColor: 'rgba(255,255,255,0.92)',
     borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
     paddingHorizontal: 12,
   },
   searchIcon: {
@@ -479,33 +526,33 @@ const s = StyleSheet.create({
   searchInput: {
     flex: 1,
     fontSize: 15,
-    color: '#111827',
-    paddingVertical: 10,
+    color: '#0F172A',
+    paddingVertical: 11,
   },
   clearBtn: {
     padding: 6,
   },
   clearBtnText: {
     fontSize: 14,
-    color: '#9CA3AF',
+    color: '#94A3B8',
     fontWeight: '700',
   },
 
   // Search dropdown
   searchDropdown: {
     position: 'absolute',
-    top: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 60 : 104,
-    left: 62,
-    right: 12,
+    top: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 64 : 108,
+    left: 64,
+    right: 14,
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: '#F1F5F9',
     elevation: 8,
-    shadowColor: '#000',
+    shadowColor: '#1A3B6D',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
     zIndex: 30,
     maxHeight: 260,
   },
@@ -514,7 +561,7 @@ const s = StyleSheet.create({
     alignItems: 'center',
     padding: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    borderBottomColor: '#F8FAFC',
   },
   searchResultIcon: {
     fontSize: 16,
@@ -522,9 +569,10 @@ const s = StyleSheet.create({
   },
   searchResultText: {
     fontSize: 14,
-    color: '#374151',
+    color: '#334155',
     flex: 1,
     lineHeight: 20,
+    fontWeight: '500',
   },
 
   // Map
@@ -534,7 +582,7 @@ const s = StyleSheet.create({
   },
   webview: {
     flex: 1,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: '#E2E8F0',
   },
   loadingOverlay: {
     position: 'absolute',
@@ -542,7 +590,7 @@ const s = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(255,255,255,0.9)',
+    backgroundColor: 'rgba(255,255,255,0.92)',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 5,
@@ -550,7 +598,7 @@ const s = StyleSheet.create({
   loadingText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#6B7280',
+    color: '#64748B',
     marginTop: 10,
   },
 
@@ -559,19 +607,19 @@ const s = StyleSheet.create({
     position: 'absolute',
     bottom: 20,
     right: 16,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 50,
+    height: 50,
+    borderRadius: 25,
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 6,
-    shadowColor: '#000',
+    shadowColor: '#1A56DB',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.2,
-    shadowRadius: 6,
+    shadowRadius: 8,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: '#E2E8F0',
   },
   gpsButtonIcon: {
     fontSize: 24,
@@ -581,21 +629,21 @@ const s = StyleSheet.create({
   // Bottom bar
   bottomBar: {
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
+    paddingHorizontal: 18,
     paddingTop: 16,
-    paddingBottom: 24,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    elevation: 10,
+    paddingBottom: 26,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    elevation: 14,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.15,
+    shadowRadius: 14,
   },
   addressRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    marginBottom: 14,
+    marginBottom: 16,
   },
   addressDot: {
     width: 14,
@@ -603,7 +651,7 @@ const s = StyleSheet.create({
     borderRadius: 7,
     backgroundColor: '#EF4444',
     borderWidth: 2.5,
-    borderColor: '#FCA5A5',
+    borderColor: '#FECACA',
     marginTop: 3,
     marginRight: 12,
   },
@@ -613,37 +661,47 @@ const s = StyleSheet.create({
   addressLabel: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#9CA3AF',
+    color: '#94A3B8',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-    marginBottom: 3,
+    marginBottom: 4,
+  },
+  addressTextWrapper: {
+    minHeight: 42,
+    justifyContent: 'center',
   },
   addressText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#111827',
+    color: '#0F172A',
     lineHeight: 21,
   },
   addressResolving: {
     fontSize: 14,
-    color: '#6B7280',
+    color: '#64748B',
     fontStyle: 'italic',
   },
   confirmBtn: {
     backgroundColor: '#1A56DB',
     borderRadius: 14,
     paddingVertical: 16,
-    elevation: 3,
+    elevation: 4,
+    shadowColor: '#1A56DB',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
   },
   confirmBtnDisabled: {
     backgroundColor: '#93C5FD',
     elevation: 0,
+    shadowOpacity: 0,
   },
   confirmBtnText: {
     color: '#FFFFFF',
     textAlign: 'center',
     fontSize: 16,
     fontWeight: '700',
+    letterSpacing: 0.3,
   },
 });
 

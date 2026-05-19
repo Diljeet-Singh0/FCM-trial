@@ -35,6 +35,50 @@ export const registerUser = async (
   }
 };
 
+export const loginUser = async (phone: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
+    });
+    return await response.json();
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const verifyOtp = async (phone: string, otp: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/auth/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone, otp }),
+    });
+    return await response.json();
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const signupUser = async (params: {
+  phone: string;
+  name: string;
+  role: GozoUserRole;
+  fcmToken?: string;
+}) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    return await response.json();
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
 export const acceptRequest = async (requestId: string, transporterId: string) => {
   try {
     const response = await fetch(`${API_BASE_URL}/gozo/accept-request`, {
@@ -126,6 +170,16 @@ export const uploadBuilty = async (
     return { success: data.success, error: data.error };
   } catch (error: any) {
     return { success: false, error: error.message };
+  }
+};
+
+export const fetchDriverHistory = async (transporterId: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/driver-history/${transporterId}`);
+    const data = await response.json();
+    return { success: data.success, requests: data.requests ?? [], error: data.error };
+  } catch (error: any) {
+    return { success: false, requests: [], error: error.message };
   }
 };
 

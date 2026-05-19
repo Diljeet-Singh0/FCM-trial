@@ -6,7 +6,8 @@ const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 let serviceAccount;
 
@@ -164,6 +165,108 @@ app.post('/gozo/register-user', async (req, res) => {
   }
 });
 
+// ─── Authentication System (Phone OTP) ───
+
+// Step 1: Login / Request OTP
+app.post('/gozo/auth/login', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, error: 'Phone number is required' });
+
+    // Check if user exists
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, role, name')
+      .eq('phone', phone)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    // In a real app, send OTP via Twilio/Firebase here.
+    // We are currently hardcoding '123456' as OTP.
+
+    if (user) {
+      res.json({ success: true, isNewUser: false, role: user.role });
+    } else {
+      res.json({ success: true, isNewUser: true });
+    }
+  } catch (error) {
+    console.error('[GoZo] auth-login error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Step 2: Verify OTP
+app.post('/gozo/auth/verify', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { phone, otp } = req.body;
+    if (!phone || !otp) return res.status(400).json({ success: false, error: 'Phone and OTP are required' });
+
+    // Hardcoded OTP validation
+    if (otp !== '123456') {
+      return res.status(401).json({ success: false, error: 'Invalid OTP' });
+    }
+
+    // Check if user exists to return their details
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, role, name')
+      .eq('phone', phone)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    res.json({ success: true, user: user || null });
+  } catch (error) {
+    console.error('[GoZo] auth-verify error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Step 3: Signup (New User Registration)
+app.post('/gozo/auth/signup', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { phone, name, role, factory_name, factory_address, factory_lat, factory_lng, fcmToken } = req.body;
+    
+    if (!phone || !name || !role) {
+      return res.status(400).json({ success: false, error: 'Phone, name, and role are required' });
+    }
+    if (!VALID_ROLES.has(role)) {
+      return res.status(400).json({ success: false, error: 'Invalid role' });
+    }
+
+    // Insert user
+    const { data, error } = await supabase
+      .from('users')
+      .insert({
+        name,
+        phone,
+        role,
+        fcm_token: fcmToken || null,
+        factory_name: factory_name || null,
+        factory_address: factory_address || null,
+        factory_lat: factory_lat || null,
+        factory_lng: factory_lng || null
+      })
+      .select('id, name, role')
+      .single();
+
+    if (error) throw error;
+
+    if (fcmToken) {
+      tokenStore[data.id] = fcmToken;
+    }
+
+    res.json({ success: true, user: data });
+  } catch (error) {
+    console.error('[GoZo] auth-signup error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 const getPredefinedPrice = (goodsType, weightKg) => {
   const basePrices = {
     'furniture': 500,
@@ -184,7 +287,10 @@ const getPredefinedPrice = (goodsType, weightKg) => {
     }
   }
   
-  return Math.round(basePrice + (weightKg * 10));
+  return {
+    total: Math.round(basePrice + (weightKg * 10)),
+    base: basePrice
+  };
 };
 
 app.post('/gozo/create-request', async (req, res) => {
@@ -198,7 +304,8 @@ app.post('/gozo/create-request', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing required fields' });
     }
 
-    const predefinedPrice = getPredefinedPrice(goodsType, Number(weightKg));
+    const priceInfo = getPredefinedPrice(goodsType, Number(weightKg));
+    const predefinedPrice = priceInfo.total;
 
     const { data: requestRow, error: requestError } = await supabase
       .from('requests')
@@ -245,7 +352,8 @@ app.post('/gozo/create-request', async (req, res) => {
                 dropAddress: requestRow.drop_address,
                 goodsType: requestRow.goods_type,
                 weightKg: String(requestRow.weight_kg),
-                priceInr: String(predefinedPrice)
+                priceInr: String(predefinedPrice),
+                basePrice: String(priceInfo.base)
               },
               android: { priority: 'high' }
             })
@@ -416,10 +524,14 @@ app.get('/gozo/active-requests', async (req, res) => {
       throw error;
     }
 
-    const requestsWithPrices = (data ?? []).map(request => ({
-      ...request,
-      price_inr: getPredefinedPrice(request.goods_type, request.weight_kg)
-    }));
+    const requestsWithPrices = (data ?? []).map(request => {
+      const priceInfo = getPredefinedPrice(request.goods_type, request.weight_kg);
+      return {
+        ...request,
+        price_inr: priceInfo.total,
+        base_price: priceInfo.base
+      };
+    });
 
     res.json({ success: true, requests: requestsWithPrices });
   } catch (error) {
@@ -799,8 +911,42 @@ app.get('/gozo/health', async (req, res) => {
     const { error } = await supabase.from('users').select('id').limit(1);
     supabaseConnected = !error;
   }
-  res.json({ status: 'ok', supabaseConnected });
+
+  res.json({
+    status: 'ok',
+    firebase: admin.apps.length > 0,
+    supabase: supabaseConnected,
+    tokensInMemory: Object.keys(tokenStore).length
+  });
 });
+
+// ─── Driver Trip History ───
+app.get('/gozo/driver-history/:transporterId', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) {
+      return;
+    }
+
+    const { transporterId } = req.params;
+
+    const { data: requests, error: requestsError } = await supabase
+      .from('requests')
+      .select('*')
+      .eq('transporter_id', transporterId)
+      .in('status', ['matched', 'picked_up', 'on_the_way', 'completed'])
+      .order('created_at', { ascending: false });
+
+    if (requestsError) {
+      throw requestsError;
+    }
+
+    res.json({ success: true, requests: requests ?? [] });
+  } catch (error) {
+    console.error('[GoZo] driver-history error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 
 app.get('/health', (req, res) => {
   res.json({

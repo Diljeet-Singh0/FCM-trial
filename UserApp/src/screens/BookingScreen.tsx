@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, PermissionsAndroid, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
+import { Alert, PermissionsAndroid, Platform, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View, ActivityIndicator } from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
 import type { Company } from './BrowseCompaniesScreen';
 import { suggestVehicle, calculatePrice, AUTO_LOADING_CHARGE } from '../transporters';
@@ -107,23 +107,47 @@ const BookingScreen = ({ company, onBack, onConfirmBooking }: Props) => {
     });
   };
 
+  // Step Indicator
+  const StepIndicator = () => (
+    <View style={s.stepIndicator}>
+      <View style={s.stepRow}>
+        <View style={[s.stepDot, s.stepDotActive]}>
+          <Text style={s.stepDotText}>1</Text>
+        </View>
+        <View style={[s.stepLine, step === 2 && s.stepLineActive]} />
+        <View style={[s.stepDot, step === 2 && s.stepDotActive]}>
+          <Text style={[s.stepDotText, step < 2 && { color: '#94A3B8' }]}>2</Text>
+        </View>
+      </View>
+      <View style={s.stepLabelRow}>
+        <Text style={[s.stepLabelText, s.stepLabelActive]}>Details</Text>
+        <Text style={[s.stepLabelText, step === 2 && s.stepLabelActive]}>Confirm</Text>
+      </View>
+    </View>
+  );
+
   const renderStep1 = () => (
-    <ScrollView contentContainerStyle={{ padding: 20 }}>
-      <Text style={s.stepLabel}>Step 1 of 2</Text>
+    <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 8 }} showsVerticalScrollIndicator={false}>
+      <StepIndicator />
+
       <Text style={s.stepTitle}>Shipment Details</Text>
 
       <View style={s.inputGroup}>
         <Text style={s.label}>Weight of Goods (kg)</Text>
-        <TextInput style={s.input} placeholder="e.g. 500" placeholderTextColor="#9CA3AF"
-          value={weightKg} onChangeText={setWeightKg} keyboardType="numeric" />
+        <View style={s.inputWrap}>
+          <Text style={s.inputIcon}>⚖️</Text>
+          <TextInput style={s.input} placeholder="e.g. 500" placeholderTextColor="#94A3B8"
+            value={weightKg} onChangeText={setWeightKg} keyboardType="numeric" />
+          <Text style={s.inputSuffix}>kg</Text>
+        </View>
       </View>
 
       <View style={s.inputGroup}>
         <Text style={s.label}>Pickup Address</Text>
-        <View style={s.inputRow}>
+        <View style={s.inputWrap}>
           <View style={s.greenDot} />
-          <TextInput style={[s.input, { flex: 1, marginLeft: 10, marginBottom: 0 }]}
-            placeholder="Enter pickup location" placeholderTextColor="#9CA3AF"
+          <TextInput style={[s.input, { flex: 1 }]}
+            placeholder="Enter pickup location" placeholderTextColor="#94A3B8"
             value={pickupAddress} onChangeText={setPickupAddress} />
         </View>
         <View style={s.locationBtnRow}>
@@ -145,74 +169,95 @@ const BookingScreen = ({ company, onBack, onConfirmBooking }: Props) => {
 
       <View style={s.inputGroup}>
         <Text style={s.label}>Drop-off (Company Depot)</Text>
-        <View style={s.inputRow}>
+        <View style={[s.inputWrap, { backgroundColor: '#F8FAFC' }]}>
           <View style={s.blackDot} />
-          <TextInput style={[s.input, { flex: 1, marginLeft: 10, marginBottom: 0, color: '#6B7280' }]}
+          <TextInput style={[s.input, { flex: 1, color: '#64748B' }]}
             value={dropAddress} onChangeText={setDropAddress} editable={false} />
         </View>
-        <Text style={s.prefillNote}>Pre-filled with {company.name} depot</Text>
+        <Text style={s.prefillNote}>📌 Pre-filled with {company.name} depot</Text>
       </View>
 
-      <TouchableOpacity style={s.nextBtn} onPress={goToStep2}>
-        <Text style={s.nextBtnText}>Next →</Text>
+      <TouchableOpacity style={s.nextBtn} onPress={goToStep2} activeOpacity={0.8}>
+        <Text style={s.nextBtnText}>Continue  →</Text>
       </TouchableOpacity>
     </ScrollView>
   );
 
   const renderStep2 = () => (
-    <ScrollView contentContainerStyle={{ padding: 20 }}>
-      <Text style={s.stepLabel}>Step 2 of 2</Text>
-      <Text style={s.stepTitle}>Vehicle & Price</Text>
+    <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 8 }} showsVerticalScrollIndicator={false}>
+      <StepIndicator />
+
+      <Text style={s.stepTitle}>Review & Confirm</Text>
 
       {/* Confirmation Message */}
-      <View style={s.vehicleCard}>
-        <Text style={s.vehicleIcon}>✅</Text>
+      <View style={s.confirmCard}>
+        <View style={s.confirmIconWrap}>
+          <Text style={{ fontSize: 24 }}>✅</Text>
+        </View>
         <View style={{ flex: 1, marginLeft: 14 }}>
-          <Text style={s.vehicleLabel}>Status</Text>
-          <Text style={s.vehicleName}>Your pickup is confirmed</Text>
-          <Text style={s.vehicleCap}>It's on us what we send</Text>
+          <Text style={s.confirmTitle}>Pickup Confirmed</Text>
+          <Text style={s.confirmSub}>Vehicle will be assigned by the company</Text>
         </View>
       </View>
 
       {/* Pricing Model */}
       <View style={s.priceCard}>
-        <Text style={s.priceTitle}>Pricing Details</Text>
+        <View style={s.priceHeader}>
+          <Text style={s.priceHeaderIcon}>💰</Text>
+          <Text style={s.priceTitleText}>Pricing Details</Text>
+        </View>
         <View style={s.priceRow}>
           <Text style={s.priceLabel}>Rate per km</Text>
           <Text style={s.priceValue}>₹45</Text>
         </View>
         <View style={s.priceRow}>
           <Text style={s.priceLabel}>Minimum Charge</Text>
-          <Text style={s.priceValue}>₹200</Text>
+          <Text style={[s.priceValue, { color: '#059669', fontWeight: '800' }]}>₹200</Text>
         </View>
         <View style={s.priceDivider} />
         <View style={s.priceRow}>
-          <Text style={s.priceLabel}>Waiting Charges (First 15 min free)</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={s.priceLabel}>Waiting Charges</Text>
+            <Text style={s.priceSublabel}>First 15 min free</Text>
+          </View>
           <Text style={s.priceValue}>₹50 / 30 min</Text>
         </View>
       </View>
 
       {/* Summary */}
       <View style={s.summaryCard}>
-        <Text style={s.summaryTitle}>Booking Summary</Text>
-        <Text style={s.summaryItem}>📦 {weight} kg</Text>
-        <Text style={s.summaryItem}>📍 {pickupAddress}</Text>
-        <Text style={s.summaryItem}>🏭 {dropAddress.substring(0, 40)}...</Text>
-        <Text style={s.summaryItem}>🚛 {company.name}</Text>
+        <Text style={s.summaryTitle}>📋 Booking Summary</Text>
+        <View style={s.summaryRow}>
+          <Text style={s.summaryIcon}>📦</Text>
+          <Text style={s.summaryItem}>{weight} kg</Text>
+        </View>
+        <View style={s.summaryRow}>
+          <Text style={s.summaryIcon}>📍</Text>
+          <Text style={s.summaryItem} numberOfLines={1}>{pickupAddress}</Text>
+        </View>
+        <View style={s.summaryRow}>
+          <Text style={s.summaryIcon}>🏭</Text>
+          <Text style={s.summaryItem} numberOfLines={1}>{dropAddress}</Text>
+        </View>
+        <View style={s.summaryRow}>
+          <Text style={s.summaryIcon}>🚛</Text>
+          <Text style={s.summaryItem}>{company.name}</Text>
+        </View>
       </View>
 
-      <TouchableOpacity style={s.bookBtn} onPress={confirmBooking}>
-        <Text style={s.bookBtnText}>Book Now</Text>
+      <TouchableOpacity style={s.bookBtn} onPress={confirmBooking} activeOpacity={0.8}>
+        <Text style={s.bookBtnText}>✓  Book Now</Text>
       </TouchableOpacity>
 
       <TouchableOpacity style={s.backStep} onPress={() => setStep(1)}>
-        <Text style={s.backStepText}>← Back to Step 1</Text>
+        <Text style={s.backStepText}>← Back to Details</Text>
       </TouchableOpacity>
     </ScrollView>
   );
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#FFF' }}>
+    <View style={{ flex: 1, backgroundColor: '#F0F4F8' }}>
+      <StatusBar barStyle="light-content" backgroundColor="#1A56DB" />
       <View style={s.header}>
         <TouchableOpacity onPress={step === 1 ? onBack : () => setStep(1)} style={s.backBtnH}>
           <Text style={s.backArrow}>←</Text>
@@ -235,48 +280,107 @@ const BookingScreen = ({ company, onBack, onConfirmBooking }: Props) => {
 };
 
 const s = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-  backBtnH: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  backArrow: { fontSize: 24, color: '#111827', fontWeight: '300' },
-  headerTitle: { flex: 1, fontSize: 16, fontWeight: '700', color: '#111827', textAlign: 'center' },
-  stepLabel: { fontSize: 12, fontWeight: '700', color: '#1A56DB', textTransform: 'uppercase', letterSpacing: 1 },
-  stepTitle: { fontSize: 22, fontWeight: '800', color: '#111827', marginTop: 4, marginBottom: 20 },
-  inputGroup: { marginBottom: 18 },
-  label: { fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6, marginLeft: 4 },
-  input: { backgroundColor: '#F9FAFB', borderRadius: 14, borderWidth: 1.5, borderColor: '#E5E7EB', paddingHorizontal: 16, paddingVertical: 14, fontSize: 15, color: '#111827', marginBottom: 6 },
-  inputRow: { flexDirection: 'row', alignItems: 'center' },
-  greenDot: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#22C55E', borderWidth: 2, borderColor: '#BBF7D0' },
-  blackDot: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#1F2937' },
-  gpsBtn: { backgroundColor: '#EEF2FF', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
+  // Header
+  header: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 16, paddingVertical: 14,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 52,
+    backgroundColor: '#1A56DB',
+  },
+  backBtnH: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.18)', justifyContent: 'center', alignItems: 'center' },
+  backArrow: { fontSize: 22, color: '#FFFFFF', fontWeight: '400' },
+  headerTitle: { flex: 1, fontSize: 17, fontWeight: '700', color: '#FFFFFF', textAlign: 'center', letterSpacing: 0.3 },
+
+  // Step Indicator
+  stepIndicator: { marginBottom: 16 },
+  stepRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40 },
+  stepDot: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: '#E2E8F0', justifyContent: 'center', alignItems: 'center',
+  },
+  stepDotActive: { backgroundColor: '#1A56DB' },
+  stepDotText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
+  stepLine: { flex: 1, height: 3, backgroundColor: '#E2E8F0', marginHorizontal: 8, borderRadius: 2 },
+  stepLineActive: { backgroundColor: '#1A56DB' },
+  stepLabelRow: { flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: 20, marginTop: 6 },
+  stepLabelText: { fontSize: 12, fontWeight: '600', color: '#94A3B8' },
+  stepLabelActive: { color: '#1A56DB' },
+
+  stepTitle: { fontSize: 22, fontWeight: '800', color: '#0F172A', marginBottom: 20, letterSpacing: 0.1 },
+
+  // Inputs
+  inputGroup: { marginBottom: 20 },
+  label: { fontSize: 13, fontWeight: '700', color: '#334155', marginBottom: 8, marginLeft: 4, textTransform: 'uppercase', letterSpacing: 0.5 },
+  inputWrap: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#FFFFFF', borderRadius: 14,
+    borderWidth: 1.5, borderColor: '#E2E8F0',
+    paddingHorizontal: 14, paddingVertical: 2,
+  },
+  inputIcon: { fontSize: 18, marginRight: 10 },
+  input: { flex: 1, fontSize: 15, color: '#0F172A', paddingVertical: 14 },
+  inputSuffix: { fontSize: 14, color: '#94A3B8', fontWeight: '600' },
+  greenDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#22C55E', borderWidth: 2, borderColor: '#BBF7D0', marginRight: 10 },
+  blackDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#334155', marginRight: 10 },
+
+  // Location buttons
+  locationBtnRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  gpsBtn: { backgroundColor: '#EBF0FF', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 9, borderWidth: 1, borderColor: '#C7D7FE' },
   gpsBtnText: { fontSize: 13, fontWeight: '600', color: '#1A56DB' },
-  locationBtnRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
-  mapPickBtn: { backgroundColor: '#F0FDF4', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#BBF7D0' },
-  mapPickBtnText: { fontSize: 13, fontWeight: '600', color: '#16A34A' },
-  prefillNote: { fontSize: 11, color: '#9CA3AF', marginTop: 4, marginLeft: 24 },
-  nextBtn: { backgroundColor: '#1A56DB', borderRadius: 14, paddingVertical: 16, marginTop: 10 },
-  nextBtnText: { color: '#FFF', textAlign: 'center', fontSize: 16, fontWeight: '700' },
-  vehicleCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0F9FF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#E0F2FE', marginBottom: 16 },
-  vehicleIcon: { fontSize: 40 },
-  vehicleLabel: { fontSize: 11, color: '#6B7280', fontWeight: '600', textTransform: 'uppercase' },
-  vehicleName: { fontSize: 16, fontWeight: '700', color: '#111827', marginTop: 2 },
-  vehicleCap: { fontSize: 12, color: '#6B7280', marginTop: 2 },
-  autoTag: { backgroundColor: '#DCFCE7', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
-  autoTagText: { color: '#166534', fontSize: 11, fontWeight: '700' },
-  priceCard: { backgroundColor: '#FFF', borderRadius: 16, padding: 16, borderWidth: 1.5, borderColor: '#E5E7EB', marginBottom: 16 },
-  priceTitle: { fontSize: 16, fontWeight: '700', color: '#111827', marginBottom: 12 },
-  priceRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  priceLabel: { fontSize: 13, color: '#6B7280', flex: 1 },
-  priceValue: { fontSize: 14, fontWeight: '600', color: '#111827' },
-  priceDivider: { height: 1, backgroundColor: '#E5E7EB', marginVertical: 8 },
-  totalLabel: { fontSize: 16, fontWeight: '800', color: '#111827' },
-  totalValue: { fontSize: 18, fontWeight: '800', color: '#16A34A' },
-  summaryCard: { backgroundColor: '#FFFBEB', borderRadius: 14, padding: 14, borderWidth: 1, borderColor: '#FDE68A', marginBottom: 16 },
-  summaryTitle: { fontSize: 14, fontWeight: '700', color: '#92400E', marginBottom: 8 },
-  summaryItem: { fontSize: 13, color: '#78350F', lineHeight: 22 },
-  bookBtn: { backgroundColor: '#16A34A', borderRadius: 14, paddingVertical: 16, elevation: 3, marginBottom: 8 },
-  bookBtnText: { color: '#FFF', textAlign: 'center', fontSize: 17, fontWeight: '700' },
-  backStep: { paddingVertical: 12, alignItems: 'center' },
-  backStepText: { fontSize: 14, color: '#6B7280', fontWeight: '600' },
+  mapPickBtn: { backgroundColor: '#ECFDF5', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 9, borderWidth: 1, borderColor: '#A7F3D0' },
+  mapPickBtnText: { fontSize: 13, fontWeight: '600', color: '#059669' },
+  prefillNote: { fontSize: 12, color: '#94A3B8', marginTop: 6, marginLeft: 4 },
+
+  nextBtn: {
+    backgroundColor: '#1A56DB', borderRadius: 14, paddingVertical: 16, marginTop: 8,
+    elevation: 4, shadowColor: '#1A56DB', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8,
+  },
+  nextBtnText: { color: '#FFFFFF', textAlign: 'center', fontSize: 16, fontWeight: '700', letterSpacing: 0.3 },
+
+  // Step 2
+  confirmCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#ECFDF5', borderRadius: 16, padding: 16,
+    borderWidth: 1, borderColor: '#A7F3D0', marginBottom: 16,
+  },
+  confirmIconWrap: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: '#D1FAE5', justifyContent: 'center', alignItems: 'center',
+  },
+  confirmTitle: { fontSize: 16, fontWeight: '700', color: '#065F46' },
+  confirmSub: { fontSize: 12, color: '#059669', marginTop: 2, fontWeight: '500' },
+
+  priceCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 18,
+    borderWidth: 1.5, borderColor: '#E2E8F0', marginBottom: 16,
+    elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4,
+  },
+  priceHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
+  priceHeaderIcon: { fontSize: 20, marginRight: 8 },
+  priceTitleText: { fontSize: 16, fontWeight: '700', color: '#0F172A' },
+  priceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
+  priceLabel: { fontSize: 14, color: '#475569', fontWeight: '500' },
+  priceValue: { fontSize: 15, fontWeight: '700', color: '#0F172A' },
+  priceSublabel: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+  priceDivider: { height: 1, backgroundColor: '#F1F5F9', marginVertical: 6 },
+
+  summaryCard: {
+    backgroundColor: '#FFFBEB', borderRadius: 16, padding: 16,
+    borderWidth: 1, borderColor: '#FDE68A', marginBottom: 16,
+  },
+  summaryTitle: { fontSize: 15, fontWeight: '700', color: '#92400E', marginBottom: 10 },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
+  summaryIcon: { fontSize: 14, marginRight: 10, width: 22 },
+  summaryItem: { fontSize: 13, color: '#78350F', fontWeight: '500', flex: 1 },
+
+  bookBtn: {
+    backgroundColor: '#059669', borderRadius: 14, paddingVertical: 16,
+    elevation: 4, shadowColor: '#059669', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8,
+    marginBottom: 8,
+  },
+  bookBtnText: { color: '#FFFFFF', textAlign: 'center', fontSize: 17, fontWeight: '700', letterSpacing: 0.3 },
+  backStep: { paddingVertical: 14, alignItems: 'center' },
+  backStepText: { fontSize: 14, color: '#64748B', fontWeight: '600' },
 });
 
 export default BookingScreen;
