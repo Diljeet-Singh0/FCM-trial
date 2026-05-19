@@ -396,7 +396,7 @@ app.post('/gozo/accept-request', async (req, res) => {
     }
 
     // Calculate the predefined price for consistency
-    const acceptedPrice = getPredefinedPrice(requestRow.goods_type, requestRow.weight_kg);
+    const acceptedPrice = getPredefinedPrice(requestRow.goods_type, requestRow.weight_kg).total;
 
     // Fetch transporter details for driver info
     const { data: transporterRow, error: transporterError } = await supabase
