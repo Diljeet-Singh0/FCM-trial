@@ -28,7 +28,46 @@ try {
 }
 
 const tokenStore = {};
+const driverStatusStore = {}; // { driverId: { online: bool, lastSeen: ts, latitude: num, longitude: num } }
+const pendingCascades = {}; // { requestId: [timeoutId, ...] } — cascading notification timers
 const VALID_ROLES = new Set(['owner', 'transporter']);
+const BATCH_SIZE = 5; // notify 5 nearest drivers per wave
+const BATCH_INTERVAL_MS = 20 * 1000; // 20 seconds between waves
+const MAPBOX_TOKEN = process.env.MAPBOX_ACCESS_TOKEN || '';
+
+// Haversine formula: distance in km between two lat/lng points
+const haversineKm = (lat1, lon1, lat2, lon2) => {
+  const toRad = (v) => (v * Math.PI) / 180;
+  const R = 6371; // Earth radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+// Geocode an address to [lat, lng] using Mapbox
+const geocodeAddress = async (address) => {
+  try {
+    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?access_token=${MAPBOX_TOKEN}&limit=1`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.features && data.features.length > 0) {
+      const [lng, lat] = data.features[0].center;
+      return { latitude: lat, longitude: lng };
+    }
+  } catch (e) {
+    console.warn('[GoZo] Geocode failed:', e.message);
+  }
+  return null;
+};
+
+// Cancel all pending cascade timers for a request
+const cancelCascade = (requestId) => {
+  if (pendingCascades[requestId]) {
+    pendingCascades[requestId].forEach((tid) => clearTimeout(tid));
+    delete pendingCascades[requestId];
+  }
+};
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -171,7 +210,7 @@ app.post('/gozo/register-user', async (req, res) => {
 app.post('/gozo/auth/login', async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { phone } = req.body;
+    const { phone, expectedRole } = req.body;
     if (!phone) return res.status(400).json({ success: false, error: 'Phone number is required' });
 
     // Check if user exists
@@ -187,6 +226,15 @@ app.post('/gozo/auth/login', async (req, res) => {
     // We are currently hardcoding '123456' as OTP.
 
     if (user) {
+      // Role mismatch: driver trying to log in to owner app or vice versa
+      if (expectedRole && user.role !== expectedRole) {
+        const appName = expectedRole === 'owner' ? 'GoZo Owner App' : 'GoZo Driver App';
+        const correctApp = user.role === 'owner' ? 'GoZo Owner App' : 'GoZo Driver App';
+        return res.status(403).json({
+          success: false,
+          error: `This number is registered as a ${user.role}. Please use the ${correctApp} instead.`
+        });
+      }
       res.json({ success: true, isNewUser: false, role: user.role });
     } else {
       res.json({ success: true, isNewUser: true });
@@ -201,7 +249,7 @@ app.post('/gozo/auth/login', async (req, res) => {
 app.post('/gozo/auth/verify', async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { phone, otp } = req.body;
+    const { phone, otp, expectedRole } = req.body;
     if (!phone || !otp) return res.status(400).json({ success: false, error: 'Phone and OTP are required' });
 
     // Hardcoded OTP validation
@@ -217,6 +265,15 @@ app.post('/gozo/auth/verify', async (req, res) => {
       .maybeSingle();
 
     if (error) throw error;
+
+    // Double-check role on verify step too (prevents bypassing login check)
+    if (user && expectedRole && user.role !== expectedRole) {
+      const correctApp = user.role === 'owner' ? 'GoZo Owner App' : 'GoZo Driver App';
+      return res.status(403).json({
+        success: false,
+        error: `This number is registered as a ${user.role}. Please use the ${correctApp} instead.`
+      });
+    }
 
     res.json({ success: true, user: user || null });
   } catch (error) {
@@ -235,7 +292,25 @@ app.post('/gozo/auth/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Phone, name, and role are required' });
     }
     if (!VALID_ROLES.has(role)) {
-      return res.status(400).json({ success: false, error: 'Invalid role' });
+      return res.status(400).json({ success: false, error: 'Invalid role. Must be owner or transporter.' });
+    }
+
+    // Prevent signing up with a phone already registered under a DIFFERENT role
+    const { data: existing } = await supabase
+      .from('users')
+      .select('id, role')
+      .eq('phone', phone)
+      .maybeSingle();
+
+    if (existing) {
+      if (existing.role !== role) {
+        const correctApp = existing.role === 'owner' ? 'GoZo Owner App' : 'GoZo Driver App';
+        return res.status(409).json({
+          success: false,
+          error: `This number is already registered as a ${existing.role}. Please use the ${correctApp} instead.`
+        });
+      }
+      return res.status(409).json({ success: false, error: 'Phone number is already registered. Please log in.' });
     }
 
     // Insert user
@@ -267,30 +342,149 @@ app.post('/gozo/auth/signup', async (req, res) => {
   }
 });
 
-const getPredefinedPrice = (goodsType, weightKg) => {
-  const basePrices = {
-    'furniture': 500,
-    'electronics': 800,
-    'food': 300,
-    'clothes': 250,
-    'books': 200,
-    'default': 400
-  };
+const getPredefinedPrice = (rawGoodsType, weightKg, explicitDistance = null) => {
+  let goodsType = rawGoodsType;
+  let distanceKm = explicitDistance || 5;
+
+  const distMatch = goodsType.match(/_dist_([\d.]+)/);
+  if (distMatch) {
+    distanceKm = parseFloat(distMatch[1]);
+    goodsType = goodsType.replace(distMatch[0], '');
+  }
+
+  const isAuto = weightKg <= 500;
   
+  if (isAuto) {
+    const basePrice = Math.max(200, Math.round(distanceKm * 45));
+    const rangeMin = basePrice;
+    const rangeMax = basePrice + 50; // account for potential waiting charges
+    
+    return {
+      total: basePrice,
+      base: basePrice,
+      serviceFee: 0,
+      estimatedFreight: basePrice,
+      driverCut: basePrice,
+      rangeMin,
+      rangeMax,
+    };
+  }
+
+  const basePrices = {
+    furniture: 500,
+    electronics: 800,
+    food: 300,
+    clothes: 250,
+    books: 200,
+    default: 400,
+  };
+
   const goodsLower = goodsType.toLowerCase();
   let basePrice = basePrices['default'];
-  
+
   for (const [key, price] of Object.entries(basePrices)) {
     if (goodsLower.includes(key)) {
       basePrice = price;
       break;
     }
   }
-  
+
+  const total = Math.round(basePrice + weightKg * 10);
+  const serviceFee = Math.round(total * 0.2); // 20% service fee
+  const estimatedFreight = total - serviceFee; // driver payout before cut
+  const driverCut = Math.round(estimatedFreight * 0.9); // driver receives 90% of freight, 10% platform
+  const rangeMin = Math.round(driverCut * 0.85);
+  const rangeMax = Math.round(driverCut * 1.15);
+
   return {
-    total: Math.round(basePrice + (weightKg * 10)),
-    base: basePrice
+    total,
+    base: basePrice,
+    serviceFee,
+    estimatedFreight,
+    driverCut,
+    rangeMin,
+    rangeMax,
   };
+};
+
+app.post('/gozo/estimate-price', (req, res) => {
+  try {
+    const { goodsType, weightKg, distanceKm } = req.body;
+    if (!goodsType || !weightKg) {
+      return res.status(400).json({ success: false, error: 'Missing goodsType or weightKg' });
+    }
+    const priceInfo = getPredefinedPrice(goodsType, Number(weightKg), Number(distanceKm || 5));
+    res.json({ success: true, estimate: priceInfo });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/gozo/price-preview', (req, res) => {
+  try {
+    const { weightKg, distanceKm } = req.body;
+    const priceInfo = getPredefinedPrice('general', Number(weightKg || 0), Number(distanceKm || 5));
+    res.json({ 
+      success: true, 
+      rangeMin: priceInfo.rangeMin, 
+      rangeMax: priceInfo.rangeMax, 
+      driverCut: priceInfo.driverCut 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Driver Online/Offline Status + Location ───
+app.post('/gozo/driver-status', async (req, res) => {
+  try {
+    const { driverId, online, latitude, longitude } = req.body;
+    if (!driverId || typeof online !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'driverId and online (boolean) are required' });
+    }
+    const entry = { online, lastSeen: Date.now() };
+    if (typeof latitude === 'number' && typeof longitude === 'number') {
+      entry.latitude = latitude;
+      entry.longitude = longitude;
+    } else if (driverStatusStore[driverId]) {
+      // Preserve previous location if not sent this time
+      entry.latitude = driverStatusStore[driverId].latitude;
+      entry.longitude = driverStatusStore[driverId].longitude;
+    }
+    driverStatusStore[driverId] = entry;
+    console.log(`[GoZo] Driver ${driverId} ${online ? 'ONLINE' : 'OFFLINE'} @ (${entry.latitude ?? '?'}, ${entry.longitude ?? '?'})`);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Helper: build FCM notification payload for a request
+const buildRequestNotification = (transporter, requestRow, goodsType, predefinedPrice, priceInfo) => {
+  return admin.messaging().send({
+    token: transporter.fcm_token,
+    notification: {
+      title: '🚛 New GoZo Shipment Request',
+      body: `${goodsType} · ${requestRow.weight_kg}kg · ₹${predefinedPrice} · ${requestRow.pickup_address} → ${requestRow.drop_address}`
+    },
+    data: {
+      requestId: requestRow.id,
+      type: 'NEW_REQUEST',
+      ownerId: requestRow.owner_id,
+      pickupAddress: requestRow.pickup_address,
+      dropAddress: requestRow.drop_address,
+      goodsType: goodsType,
+      weightKg: String(requestRow.weight_kg),
+      priceInr: String(predefinedPrice),
+      basePrice: String(priceInfo.base),
+      estimatedFreight: String(priceInfo.estimatedFreight),
+      serviceFee: String(priceInfo.serviceFee),
+      driverCut: String(priceInfo.driverCut),
+      rangeMin: String(priceInfo.rangeMin),
+      rangeMax: String(priceInfo.rangeMax)
+    },
+    android: { priority: 'high' }
+  });
 };
 
 app.post('/gozo/create-request', async (req, res) => {
@@ -299,19 +493,22 @@ app.post('/gozo/create-request', async (req, res) => {
       return;
     }
 
-    const { ownerId, goodsType, weightKg, pickupAddress, dropAddress } = req.body;
+    const { ownerId, goodsType, weightKg, pickupAddress, dropAddress, distanceKm } = req.body;
     if (!ownerId || !goodsType || !weightKg || !pickupAddress || !dropAddress) {
       return res.status(400).json({ success: false, error: 'Missing required fields' });
     }
 
-    const priceInfo = getPredefinedPrice(goodsType, Number(weightKg));
+    const priceInfo = getPredefinedPrice(goodsType, Number(weightKg), Number(distanceKm || 5));
     const predefinedPrice = priceInfo.total;
+
+    // Encode distance into goods_type to avoid DB schema changes
+    const storedGoodsType = distanceKm ? `${goodsType}_dist_${distanceKm}` : goodsType;
 
     const { data: requestRow, error: requestError } = await supabase
       .from('requests')
       .insert({
         owner_id: ownerId,
-        goods_type: goodsType,
+        goods_type: storedGoodsType,
         weight_kg: Number(weightKg),
         pickup_address: pickupAddress,
         drop_address: dropAddress
@@ -332,34 +529,140 @@ app.post('/gozo/create-request', async (req, res) => {
       throw transportersError;
     }
 
+    const allDrivers = (transporters ?? []).filter((t) => t.fcm_token);
+
+    // Split drivers into online (with location) and offline groups
+    const onlineDrivers = allDrivers.filter((d) => {
+      const status = driverStatusStore[d.id];
+      return status && status.online;
+    });
+    const offlineDrivers = allDrivers.filter((d) => {
+      const status = driverStatusStore[d.id];
+      return !status || !status.online;
+    });
+
     let notifiedCount = 0;
+
     if (admin.apps.length) {
-      const sendResults = await Promise.allSettled(
-        (transporters ?? [])
-          .filter((transporter) => transporter.fcm_token)
-          .map((transporter) =>
-            admin.messaging().send({
-              token: transporter.fcm_token,
-              notification: {
-                title: '🚛 New GoZo Shipment Request',
-                body: `${requestRow.goods_type} · ${requestRow.weight_kg}kg · ₹${predefinedPrice} · ${requestRow.pickup_address} → ${requestRow.drop_address}`
-              },
-              data: {
-                requestId: requestRow.id,
-                type: 'NEW_REQUEST',
-                ownerId: requestRow.owner_id,
-                pickupAddress: requestRow.pickup_address,
-                dropAddress: requestRow.drop_address,
-                goodsType: requestRow.goods_type,
-                weightKg: String(requestRow.weight_kg),
-                priceInr: String(predefinedPrice),
-                basePrice: String(priceInfo.base)
-              },
-              android: { priority: 'high' }
-            })
-          )
-      );
-      notifiedCount = sendResults.filter((result) => result.status === 'fulfilled').length;
+      // ─── Geocode the pickup address to get coordinates ───
+      let pickupCoords = null;
+      try {
+        pickupCoords = await geocodeAddress(pickupAddress);
+      } catch (e) {
+        console.warn('[GoZo] Could not geocode pickup address:', e.message);
+      }
+
+      if (onlineDrivers.length > 0 && pickupCoords) {
+        // ─── Sort online drivers by distance to pickup ───
+        const driversWithDist = onlineDrivers.map((d) => {
+          const status = driverStatusStore[d.id];
+          const dist = (status && typeof status.latitude === 'number' && typeof status.longitude === 'number')
+            ? haversineKm(pickupCoords.latitude, pickupCoords.longitude, status.latitude, status.longitude)
+            : Infinity; // no GPS → put at end
+          return { ...d, distKm: dist };
+        }).sort((a, b) => a.distKm - b.distKm);
+
+        // ─── Split into batches of BATCH_SIZE ───
+        const batches = [];
+        for (let i = 0; i < driversWithDist.length; i += BATCH_SIZE) {
+          batches.push(driversWithDist.slice(i, i + BATCH_SIZE));
+        }
+
+        console.log(`[GoZo] Request ${requestRow.id}: ${onlineDrivers.length} online drivers, ${batches.length} batch(es), ${offlineDrivers.length} offline`);
+
+        // ─── Batch 0: notify immediately ───
+        const firstBatch = batches[0];
+        const firstResults = await Promise.allSettled(
+          firstBatch.map((d) => buildRequestNotification(d, requestRow, goodsType, predefinedPrice, priceInfo))
+        );
+        notifiedCount = firstResults.filter((r) => r.status === 'fulfilled').length;
+        console.log(`[GoZo] Batch 1/${batches.length}: Notified ${notifiedCount} nearest drivers (${firstBatch.map(d => d.distKm.toFixed(1) + 'km').join(', ')})`);
+
+        // ─── Batches 1..N: cascade every BATCH_INTERVAL_MS ───
+        pendingCascades[requestRow.id] = [];
+
+        for (let bIdx = 1; bIdx < batches.length; bIdx++) {
+          const batch = batches[bIdx];
+          const delay = bIdx * BATCH_INTERVAL_MS;
+          const tid = setTimeout(async () => {
+            try {
+              const { data: reqCheck } = await supabase
+                .from('requests').select('status').eq('id', requestRow.id).single();
+              if (reqCheck && reqCheck.status === 'pending') {
+                const batchResults = await Promise.allSettled(
+                  batch.map((d) => buildRequestNotification(d, requestRow, goodsType, predefinedPrice, priceInfo))
+                );
+                const sent = batchResults.filter((r) => r.status === 'fulfilled').length;
+                console.log(`[GoZo] Batch ${bIdx + 1}/${batches.length}: Notified ${sent} drivers (${batch.map(d => d.distKm.toFixed(1) + 'km').join(', ')})`);
+              } else {
+                console.log(`[GoZo] Request ${requestRow.id} already accepted, skipping batch ${bIdx + 1}`);
+              }
+            } catch (e) {
+              console.error(`[GoZo] Cascade batch ${bIdx + 1} error:`, e.message);
+            }
+          }, delay);
+          pendingCascades[requestRow.id].push(tid);
+        }
+
+        // ─── Final fallback: offline drivers after all online batches exhausted ───
+        if (offlineDrivers.length > 0) {
+          const offlineDelay = batches.length * BATCH_INTERVAL_MS;
+          const offlineTid = setTimeout(async () => {
+            try {
+              const { data: reqCheck } = await supabase
+                .from('requests').select('status').eq('id', requestRow.id).single();
+              if (reqCheck && reqCheck.status === 'pending') {
+                const offlineResults = await Promise.allSettled(
+                  offlineDrivers.map((d) => buildRequestNotification(d, requestRow, goodsType, predefinedPrice, priceInfo))
+                );
+                const sent = offlineResults.filter((r) => r.status === 'fulfilled').length;
+                console.log(`[GoZo] Offline fallback: Notified ${sent} offline drivers for request ${requestRow.id}`);
+              } else {
+                console.log(`[GoZo] Request ${requestRow.id} already accepted, skipping offline fallback`);
+              }
+            } catch (e) {
+              console.error(`[GoZo] Offline fallback error:`, e.message);
+            } finally {
+              cancelCascade(requestRow.id);
+            }
+          }, offlineDelay);
+          pendingCascades[requestRow.id].push(offlineTid);
+        }
+
+      } else if (onlineDrivers.length > 0 && !pickupCoords) {
+        // ─── Geocode failed — notify all online drivers immediately, then offline fallback ───
+        console.log(`[GoZo] Geocode failed for "${pickupAddress}", notifying all ${onlineDrivers.length} online drivers`);
+        const results = await Promise.allSettled(
+          onlineDrivers.map((d) => buildRequestNotification(d, requestRow, goodsType, predefinedPrice, priceInfo))
+        );
+        notifiedCount = results.filter((r) => r.status === 'fulfilled').length;
+
+        if (offlineDrivers.length > 0) {
+          pendingCascades[requestRow.id] = [];
+          const tid = setTimeout(async () => {
+            try {
+              const { data: reqCheck } = await supabase
+                .from('requests').select('status').eq('id', requestRow.id).single();
+              if (reqCheck && reqCheck.status === 'pending') {
+                const offR = await Promise.allSettled(
+                  offlineDrivers.map((d) => buildRequestNotification(d, requestRow, goodsType, predefinedPrice, priceInfo))
+                );
+                console.log(`[GoZo] Offline fallback (no geocode): Notified ${offR.filter(r => r.status === 'fulfilled').length} drivers`);
+              }
+            } catch (e) { console.error(e.message); }
+            finally { cancelCascade(requestRow.id); }
+          }, BATCH_INTERVAL_MS);
+          pendingCascades[requestRow.id].push(tid);
+        }
+
+      } else {
+        // ─── No online drivers — notify everyone immediately ───
+        const results = await Promise.allSettled(
+          allDrivers.map((d) => buildRequestNotification(d, requestRow, goodsType, predefinedPrice, priceInfo))
+        );
+        notifiedCount = results.filter((r) => r.status === 'fulfilled').length;
+        console.log(`[GoZo] No online drivers — notified ALL ${notifiedCount} drivers for request ${requestRow.id}`);
+      }
     }
 
     res.json({ success: true, requestId: requestRow.id, notifiedCount, priceInr: predefinedPrice });
@@ -430,6 +733,9 @@ app.post('/gozo/accept-request', async (req, res) => {
       throw updateError;
     }
 
+    // Cancel all pending cascade/offline timers for this request
+    cancelCascade(requestId);
+
     // Notify the owner that a transporter accepted their shipment
     const { data: ownerRow, error: ownerError } = await supabase
       .from('users')
@@ -483,6 +789,106 @@ app.post('/gozo/decline-request', async (req, res) => {
   }
 });
 
+app.post('/gozo/cancel-request', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) {
+      return;
+    }
+
+    const { requestId } = req.body;
+    if (!requestId) {
+      return res.status(400).json({ success: false, error: 'Missing requestId' });
+    }
+
+    const { data: requestRow, error: lookupError } = await supabase
+      .from('requests')
+      .select('status, transporter_id')
+      .eq('id', requestId)
+      .single();
+
+    if (lookupError) {
+      throw lookupError;
+    }
+
+    if (requestRow.status === 'completed') {
+      return res.status(400).json({ success: false, error: 'Cannot cancel a completed trip' });
+    }
+
+    if (requestRow.status === 'cancelled') {
+      return res.json({ success: true, message: 'Request already cancelled' });
+    }
+
+    const originalStatus = requestRow.status;
+
+    const { error: updateError } = await supabase
+      .from('requests')
+      .update({ status: 'cancelled' })
+      .eq('id', requestId);
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    cancelCascade(requestId);
+
+    if (originalStatus === 'matched' && requestRow.transporter_id) {
+      const { data: driverRow } = await supabase
+        .from('users')
+        .select('fcm_token')
+        .eq('id', requestRow.transporter_id)
+        .single();
+
+      if (driverRow?.fcm_token && admin.apps.length) {
+        try {
+          await admin.messaging().send({
+            token: driverRow.fcm_token,
+            notification: {
+              title: '❌ Shipment Cancelled',
+              body: `The shipment request has been cancelled by the customer.`
+            },
+            data: {
+              requestId: requestId,
+              type: 'REQUEST_CANCELLED'
+            },
+            android: { priority: 'high' }
+          });
+          console.log(`[GoZo] Sent REQUEST_CANCELLED FCM notification to driver ${requestRow.transporter_id}`);
+        } catch (fcmErr) {
+          console.error('[GoZo] Failed to send cancel notification to driver:', fcmErr.message);
+        }
+      }
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[GoZo] cancel-request error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Fetch user profile details
+app.get('/gozo/user/:userId', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) {
+      return;
+    }
+    const { userId } = req.params;
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, name, phone, role, factory_name, factory_address')
+      .eq('id', userId)
+      .single();
+
+    if (error) {
+      throw error;
+    }
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('[GoZo] fetch user error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.get('/gozo/requests/:ownerId', async (req, res) => {
   try {
     if (!ensureSupabase(res)) {
@@ -525,13 +931,18 @@ app.get('/gozo/active-requests', async (req, res) => {
     }
 
     const requestsWithPrices = (data ?? []).map(request => {
-      const priceInfo = getPredefinedPrice(request.goods_type, request.weight_kg);
-      return {
-        ...request,
-        price_inr: priceInfo.total,
-        base_price: priceInfo.base
-      };
-    });
+        const priceInfo = getPredefinedPrice(request.goods_type, request.weight_kg);
+        return {
+          ...request,
+          price_inr: priceInfo.total,
+          base_price: priceInfo.base,
+          estimated_freight: priceInfo.estimatedFreight,
+          service_fee: priceInfo.serviceFee,
+          driver_cut: priceInfo.driverCut,
+          range_min: priceInfo.rangeMin,
+          range_max: priceInfo.rangeMax,
+        };
+      });
 
     res.json({ success: true, requests: requestsWithPrices });
   } catch (error) {
@@ -594,6 +1005,88 @@ const TRANSPORT_COMPANIES = [
 
 app.get('/gozo/transport-companies', (req, res) => {
   res.json({ success: true, companies: TRANSPORT_COMPANIES });
+});
+
+app.get('/gozo/company-images/:companyId', async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    if (!companyId) {
+      return res.status(400).json({ success: false, error: 'Missing companyId' });
+    }
+
+    const fallbackImages = {
+      'tc-001': [
+        'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1578575437130-527eed3abbec?auto=format&fit=crop&w=800&q=80'
+      ],
+      'tc-002': [
+        'https://images.unsplash.com/photo-1506015391300-4802dc74de2e?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1519003722824-192d992a6058?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&w=800&q=80'
+      ],
+      'tc-003': [
+        'https://images.unsplash.com/photo-1580674684081-7617fbf3d745?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1519003722824-192d992a6058?auto=format&fit=crop&w=800&q=80'
+      ],
+      'tc-004': [
+        'https://images.unsplash.com/photo-1563986768609-322da13575f3?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1578575437130-527eed3abbec?auto=format&fit=crop&w=800&q=80'
+      ],
+      'tc-005': [
+        'https://images.unsplash.com/photo-1519003722824-192d992a6058?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1580674684081-7617fbf3d745?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1563986768609-322da13575f3?auto=format&fit=crop&w=800&q=80'
+      ],
+      'tc-006': [
+        'https://images.unsplash.com/photo-1578575437130-527eed3abbec?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&w=800&q=80',
+        'https://images.unsplash.com/photo-1506015391300-4802dc74de2e?auto=format&fit=crop&w=800&q=80'
+      ],
+    };
+
+    const defaults = fallbackImages[companyId] || [
+      'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&w=800&q=80'
+    ];
+
+    if (!supabase) {
+      return res.json({ success: true, images: defaults });
+    }
+
+    const { data, error } = await supabase.storage
+      .from('company-images')
+      .list(companyId);
+
+    if (error) {
+      console.warn(`[Supabase Storage] Error listing folder ${companyId}:`, error.message);
+      return res.json({ success: true, images: defaults });
+    }
+
+    if (!data || data.length === 0) {
+      return res.json({ success: true, images: defaults });
+    }
+
+    const validFiles = data.filter(f => f.name !== '.emptyFolderPlaceholder' && !f.name.startsWith('.'));
+
+    if (validFiles.length === 0) {
+      return res.json({ success: true, images: defaults });
+    }
+
+    const imageUrls = validFiles.map(file => {
+      const { data: urlData } = supabase.storage
+        .from('company-images')
+        .getPublicUrl(`${companyId}/${file.name}`);
+      return urlData.publicUrl;
+    });
+
+    return res.json({ success: true, images: imageUrls });
+  } catch (err) {
+    console.error('Error fetching company images:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ─── Trip Status Updates ───
@@ -902,6 +1395,56 @@ app.post('/gozo/upload-builty', async (req, res) => {
   } catch (error) {
     console.error('[GoZo] upload-builty error:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Download Builty Receipt ───
+app.get('/gozo/download-builty/:requestId', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) {
+      return;
+    }
+
+    const { requestId } = req.params;
+    if (!requestId) {
+      return res.status(400).send('Missing requestId');
+    }
+
+    const { data: requestRow, error: requestLookupError } = await supabase
+      .from('requests')
+      .select('builty_image')
+      .eq('id', requestId)
+      .single();
+
+    if (requestLookupError || !requestRow) {
+      return res.status(404).send('Request not found');
+    }
+
+    if (!requestRow.builty_image) {
+      return res.status(404).send('Builty receipt not uploaded yet');
+    }
+
+    // Strip base64 prefix if present
+    let base64Data = requestRow.builty_image;
+    if (base64Data.startsWith('data:')) {
+      const parts = base64Data.split(',');
+      if (parts.length > 1) {
+        base64Data = parts[1];
+      }
+    }
+
+    const imgBuffer = Buffer.from(base64Data, 'base64');
+    
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg',
+      'Content-Disposition': `attachment; filename="builty_${requestId.slice(0, 7)}.jpg"`,
+      'Content-Length': imgBuffer.length
+    });
+    
+    res.end(imgBuffer);
+  } catch (error) {
+    console.error('[GoZo] download-builty error:', error);
+    res.status(500).send('Error downloading file: ' + error.message);
   }
 });
 
