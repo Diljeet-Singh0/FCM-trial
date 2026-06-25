@@ -116,7 +116,23 @@ function openCompanyModal(data = null) {
   document.getElementById('companyModalTitle').textContent = data ? 'Edit Company' : 'Add Company';
   document.getElementById('companySubmitBtn').textContent = data ? 'Save Changes' : 'Add Company';
   document.getElementById('companyEditId').value = data ? data.id : '';
-  document.getElementById('cId').value = data ? data.id : '';
+
+  let defaultId = '';
+  if (!data) {
+    let maxNum = 0;
+    companies.forEach(c => {
+      const match = c.id.match(/^tc-(\d+)$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    });
+    defaultId = 'tc-' + String(maxNum + 1).padStart(3, '0');
+  } else {
+    defaultId = data.id;
+  }
+
+  document.getElementById('cId').value = defaultId;
   document.getElementById('cId').disabled = !!data;
   document.getElementById('cName').value = data?.name || '';
   document.getElementById('cLocation').value = data?.location || '';

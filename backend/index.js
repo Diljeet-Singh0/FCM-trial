@@ -11,10 +11,10 @@ const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioVerifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
 
 let twilioClient = null;
-if (twilioAccountSid && twilioAuthToken && twilioVerifyServiceSid && 
-    twilioAccountSid !== 'your_twilio_account_sid' &&
-    twilioAuthToken !== 'your_twilio_auth_token' &&
-    twilioVerifyServiceSid !== 'your_twilio_verify_service_sid') {
+if (twilioAccountSid && twilioAuthToken && twilioVerifyServiceSid &&
+  twilioAccountSid !== 'your_twilio_account_sid' &&
+  twilioAuthToken !== 'your_twilio_auth_token' &&
+  twilioVerifyServiceSid !== 'your_twilio_verify_service_sid') {
   try {
     twilioClient = twilio(twilioAccountSid, twilioAuthToken);
     console.log('[Twilio] Initialized successfully');
@@ -33,7 +33,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use('/admin', express.static(path.join(__dirname, 'admin')));
 
-const ADMIN_PIN = process.env.ADMIN_PIN || 'gozo2024';
+const ADMIN_PIN = process.env.ADMIN_PIN || 'GoZo_2026';
 // Deterministic token so cached sessions survive server restarts
 const crypto = require('crypto');
 const ADMIN_TOKEN = 'gozo-admin-' + crypto.createHash('sha256').update(ADMIN_PIN + 'gozo-salt').digest('hex').slice(0, 16);
@@ -132,10 +132,10 @@ app.post('/register-token', (req, res) => {
     if (!userId || !fcmToken) {
       return res.status(400).json({ success: false, error: 'Missing userId or fcmToken' });
     }
-    
+
     tokenStore[userId] = fcmToken;
     console.log(`[FCM] Registered token for ${userId}`);
-    
+
     res.json({
       success: true,
       userId,
@@ -150,7 +150,7 @@ app.post('/register-token', (req, res) => {
 app.post('/send-request', async (req, res) => {
   try {
     const { targetUserId } = req.body;
-    
+
     if (!targetUserId) {
       return res.status(400).json({ success: false, error: 'Missing targetUserId' });
     }
@@ -160,7 +160,7 @@ app.post('/send-request', async (req, res) => {
     }
 
     const token = tokenStore[targetUserId];
-    
+
     if (!token) {
       return res.status(404).json({ success: false, error: 'User token not found' });
     }
@@ -188,7 +188,7 @@ app.post('/send-request', async (req, res) => {
 
     const response = await admin.messaging().send(payload);
     console.log(`[FCM] Successfully sent message:`, response);
-    
+
     res.json({ success: true, messageId: response });
   } catch (error) {
     console.error(`[FCM] Error sending message to ${req.body.targetUserId}:`, error);
@@ -303,7 +303,7 @@ app.post('/gozo/auth/login', async (req, res) => {
     } else {
       const formattedPhone = formatE164(phone);
       console.log(`[Twilio Verify] Requesting OTP for ${formattedPhone}...`);
-      
+
       try {
         await twilioClient.verify.v2
           .services(twilioVerifyServiceSid)
@@ -399,7 +399,7 @@ app.post('/gozo/auth/signup', async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
     const { phone, name, role, factory_name, factory_address, factory_lat, factory_lng, fcmToken } = req.body;
-    
+
     if (!phone || !name || !role) {
       return res.status(400).json({ success: false, error: 'Phone, name, and role are required' });
     }
@@ -465,12 +465,12 @@ const getPredefinedPrice = (rawGoodsType, weightKg, explicitDistance = null) => 
   }
 
   const isAuto = weightKg <= 500;
-  
+
   if (isAuto) {
     const basePrice = Math.max(200, Math.round(distanceKm * 45));
     const rangeMin = basePrice;
     const rangeMax = basePrice + 50; // account for potential waiting charges
-    
+
     return {
       total: basePrice,
       base: basePrice,
@@ -536,11 +536,11 @@ app.post('/gozo/price-preview', (req, res) => {
   try {
     const { weightKg, distanceKm } = req.body;
     const priceInfo = getPredefinedPrice('general', Number(weightKg || 0), Number(distanceKm || 5));
-    res.json({ 
-      success: true, 
-      rangeMin: priceInfo.rangeMin, 
-      rangeMax: priceInfo.rangeMax, 
-      driverCut: priceInfo.driverCut 
+    res.json({
+      success: true,
+      rangeMin: priceInfo.rangeMin,
+      rangeMax: priceInfo.rangeMax,
+      driverCut: priceInfo.driverCut
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -1043,18 +1043,18 @@ app.get('/gozo/active-requests', async (req, res) => {
     }
 
     const requestsWithPrices = (data ?? []).map(request => {
-        const priceInfo = getPredefinedPrice(request.goods_type, request.weight_kg);
-        return {
-          ...request,
-          price_inr: priceInfo.total,
-          base_price: priceInfo.base,
-          estimated_freight: priceInfo.estimatedFreight,
-          service_fee: priceInfo.serviceFee,
-          driver_cut: priceInfo.driverCut,
-          range_min: priceInfo.rangeMin,
-          range_max: priceInfo.rangeMax,
-        };
-      });
+      const priceInfo = getPredefinedPrice(request.goods_type, request.weight_kg);
+      return {
+        ...request,
+        price_inr: priceInfo.total,
+        base_price: priceInfo.base,
+        estimated_freight: priceInfo.estimatedFreight,
+        service_fee: priceInfo.serviceFee,
+        driver_cut: priceInfo.driverCut,
+        range_min: priceInfo.rangeMin,
+        range_max: priceInfo.rangeMax,
+      };
+    });
 
     res.json({ success: true, requests: requestsWithPrices });
   } catch (error) {
@@ -1522,13 +1522,13 @@ app.get('/gozo/download-builty/:requestId', async (req, res) => {
     }
 
     const imgBuffer = Buffer.from(base64Data, 'base64');
-    
+
     res.writeHead(200, {
       'Content-Type': 'image/jpeg',
       'Content-Disposition': `attachment; filename="builty_${requestId.slice(0, 7)}.jpg"`,
       'Content-Length': imgBuffer.length
     });
-    
+
     res.end(imgBuffer);
   } catch (error) {
     console.error('[GoZo] download-builty error:', error);
@@ -1698,13 +1698,13 @@ app.delete('/admin/api/drivers/:id', requireAdmin, async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
     const driverId = req.params.id;
-    
+
     // 1. Set transporter_id to null for requests where this driver is the transporter
     await supabase.from('requests').update({ transporter_id: null }).eq('transporter_id', driverId);
-    
+
     // 2. Delete requests where this driver was somehow registered as the owner (owner_id is NOT NULL)
     await supabase.from('requests').delete().eq('owner_id', driverId);
-    
+
     // 3. Delete the user
     const { error } = await supabase.from('users').delete().eq('id', driverId).eq('role', 'transporter');
     if (error) throw error;
