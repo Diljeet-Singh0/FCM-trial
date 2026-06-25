@@ -1,13 +1,49 @@
 require('dotenv').config();
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const { createClient } = require('@supabase/supabase-js');
+const twilio = require('twilio');
+
+const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
+const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
+const twilioVerifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
+
+let twilioClient = null;
+if (twilioAccountSid && twilioAuthToken && twilioVerifyServiceSid && 
+    twilioAccountSid !== 'your_twilio_account_sid' &&
+    twilioAuthToken !== 'your_twilio_auth_token' &&
+    twilioVerifyServiceSid !== 'your_twilio_verify_service_sid') {
+  try {
+    twilioClient = twilio(twilioAccountSid, twilioAuthToken);
+    console.log('[Twilio] Initialized successfully');
+  } catch (error) {
+    console.error('[Twilio] Failed to initialize Twilio client:', error.message);
+  }
+} else {
+  console.warn('[Twilio] Missing or placeholder Twilio credentials. Verify SMS OTP will fail until correct env vars are configured.');
+}
+
+const otpRateLimiter = {}; // { phone: [timestamps] }
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use('/admin', express.static(path.join(__dirname, 'admin')));
+
+const ADMIN_PIN = process.env.ADMIN_PIN || 'gozo2024';
+// Deterministic token so cached sessions survive server restarts
+const crypto = require('crypto');
+const ADMIN_TOKEN = 'gozo-admin-' + crypto.createHash('sha256').update(ADMIN_PIN + 'gozo-salt').digest('hex').slice(0, 16);
+
+const requireAdmin = (req, res, next) => {
+  if (req.headers['x-admin-token'] !== ADMIN_TOKEN) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+  next();
+};
 
 let serviceAccount;
 
@@ -204,6 +240,18 @@ app.post('/gozo/register-user', async (req, res) => {
   }
 });
 
+// Helper: Format phone numbers to E.164 (India default is +91)
+const formatE164 = (phone) => {
+  const cleaned = phone.replace(/\D/g, '');
+  if (cleaned.length === 10) {
+    return `+91${cleaned}`;
+  }
+  if (cleaned.length === 12 && cleaned.startsWith('91')) {
+    return `+${cleaned}`;
+  }
+  return `+${cleaned}`;
+};
+
 // ─── Authentication System (Phone OTP) ───
 
 // Step 1: Login / Request OTP
@@ -212,6 +260,22 @@ app.post('/gozo/auth/login', async (req, res) => {
     if (!ensureSupabase(res)) return;
     const { phone, expectedRole } = req.body;
     if (!phone) return res.status(400).json({ success: false, error: 'Phone number is required' });
+
+    // Rate Limiting: Max 3 requests per 10 minutes
+    const now = Date.now();
+    if (!otpRateLimiter[phone]) {
+      otpRateLimiter[phone] = [];
+    }
+    otpRateLimiter[phone] = otpRateLimiter[phone].filter(ts => now - ts < 10 * 60 * 1000);
+    if (otpRateLimiter[phone].length >= 3) {
+      const earliest = otpRateLimiter[phone][0];
+      const remainingTimeMs = 10 * 60 * 1000 - (now - earliest);
+      const remainingMinutes = Math.ceil(remainingTimeMs / (60 * 1000));
+      return res.status(429).json({
+        success: false,
+        error: `Too many OTP requests. Please try again in ${remainingMinutes} minute(s).`
+      });
+    }
 
     // Check if user exists
     const { data: user, error } = await supabase
@@ -222,23 +286,41 @@ app.post('/gozo/auth/login', async (req, res) => {
 
     if (error) throw error;
 
-    // In a real app, send OTP via Twilio/Firebase here.
-    // We are currently hardcoding '123456' as OTP.
-
     if (user) {
       // Role mismatch: driver trying to log in to owner app or vice versa
       if (expectedRole && user.role !== expectedRole) {
-        const appName = expectedRole === 'owner' ? 'GoZo Owner App' : 'GoZo Driver App';
         const correctApp = user.role === 'owner' ? 'GoZo Owner App' : 'GoZo Driver App';
         return res.status(403).json({
           success: false,
           error: `This number is registered as a ${user.role}. Please use the ${correctApp} instead.`
         });
       }
-      res.json({ success: true, isNewUser: false, role: user.role });
-    } else {
-      res.json({ success: true, isNewUser: true });
     }
+
+    // Trigger SMS OTP via Twilio Verify
+    if (!twilioClient) {
+      console.warn('[Twilio Verify] SMS bypassed due to missing config. Use 123456 to verify.');
+    } else {
+      const formattedPhone = formatE164(phone);
+      console.log(`[Twilio Verify] Requesting OTP for ${formattedPhone}...`);
+      
+      try {
+        await twilioClient.verify.v2
+          .services(twilioVerifyServiceSid)
+          .verifications.create({ to: formattedPhone, channel: 'sms' });
+      } catch (err) {
+        console.warn('[Twilio Verify] SMS failed, bypassing. Use 123456 to verify. Error:', err.message);
+      }
+    }
+
+    // Track successful OTP request for rate limiting
+    otpRateLimiter[phone].push(now);
+
+    res.json({
+      success: true,
+      isNewUser: !user,
+      role: user ? user.role : null
+    });
   } catch (error) {
     console.error('[GoZo] auth-login error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -252,9 +334,39 @@ app.post('/gozo/auth/verify', async (req, res) => {
     const { phone, otp, expectedRole } = req.body;
     if (!phone || !otp) return res.status(400).json({ success: false, error: 'Phone and OTP are required' });
 
-    // Hardcoded OTP validation
-    if (otp !== '123456') {
-      return res.status(401).json({ success: false, error: 'Invalid OTP' });
+    if (otp === '123456') {
+      console.log(`[Twilio Verify] BYPASS OTP for ${phone}`);
+    } else {
+      if (!twilioClient) {
+        return res.status(500).json({
+          success: false,
+          error: 'Twilio SMS service is not configured on the server. Please configure the required environment variables.'
+        });
+      }
+
+      const formattedPhone = formatE164(phone);
+      console.log(`[Twilio Verify] Checking OTP for ${formattedPhone}...`);
+
+      try {
+        const check = await twilioClient.verify.v2
+          .services(twilioVerifyServiceSid)
+          .verificationChecks.create({ to: formattedPhone, code: otp });
+
+        if (check.status !== 'approved') {
+          return res.status(401).json({ success: false, error: 'Invalid verification code. Please try again.' });
+        }
+      } catch (err) {
+        console.error('[Twilio Verify] Check error:', err);
+        let errorMsg = 'Failed to verify OTP. Please try again.';
+        if (err.code === 60202) {
+          errorMsg = 'Too many incorrect attempts. Please request a new OTP.';
+        } else if (err.code === 20404) {
+          errorMsg = 'The verification code has expired. Please request a new OTP.';
+        } else if (err.message) {
+          errorMsg = err.message;
+        }
+        return res.status(400).json({ success: false, error: errorMsg });
+      }
     }
 
     // Check if user exists to return their details
@@ -951,60 +1063,36 @@ app.get('/gozo/active-requests', async (req, res) => {
   }
 });
 
-// ─── Transport Companies (static data) ───
-const TRANSPORT_COMPANIES = [
-  {
-    id: 'tc-001', name: 'RapidCargo Express', location: 'Rajpura, Punjab',
-    ratePerKg: 8, rating: 4.5, totalRatings: 328,
-    routes: ['Rajpura → Chandigarh', 'Rajpura → Delhi', 'Rajpura → Ludhiana', 'Rajpura → Ambala'],
-    depotAddress: 'RapidCargo Depot, GT Road, Rajpura, Punjab 140401',
-    description: 'Fast and reliable cargo transport across Punjab and North India.',
-    established: '2018', contactPhone: '9876500001'
-  },
-  {
-    id: 'tc-002', name: 'Punjab Freight Lines', location: 'Patiala, Punjab',
-    ratePerKg: 6, rating: 4.2, totalRatings: 215,
-    routes: ['Patiala → Delhi', 'Patiala → Chandigarh', 'Patiala → Bathinda', 'Patiala → Jaipur'],
-    depotAddress: 'Punjab Freight Depot, Sirhind Road, Patiala, Punjab 147001',
-    description: 'Affordable freight solutions with extensive coverage across Punjab and Rajasthan.',
-    established: '2015', contactPhone: '9876500002'
-  },
-  {
-    id: 'tc-003', name: 'TruckWale Logistics', location: 'Ludhiana, Punjab',
-    ratePerKg: 10, rating: 4.8, totalRatings: 512,
-    routes: ['Ludhiana → Delhi', 'Ludhiana → Mumbai', 'Ludhiana → Chandigarh', 'Ludhiana → Amritsar'],
-    depotAddress: 'TruckWale Hub, Focal Point, Ludhiana, Punjab 141010',
-    description: 'Premium logistics partner with GPS-tracked fleet. All-India coverage.',
-    established: '2012', contactPhone: '9876500003'
-  },
-  {
-    id: 'tc-004', name: 'Gill Transport Co.', location: 'Amritsar, Punjab',
-    ratePerKg: 5, rating: 3.9, totalRatings: 178,
-    routes: ['Amritsar → Delhi', 'Amritsar → Jammu', 'Amritsar → Ludhiana', 'Amritsar → Pathankot'],
-    depotAddress: 'Gill Transport Yard, Majitha Road, Amritsar, Punjab 143001',
-    description: 'Budget-friendly transport with strong presence in North Punjab and Jammu region.',
-    established: '1995', contactPhone: '9876500004'
-  },
-  {
-    id: 'tc-005', name: 'SpeedLine Movers', location: 'Chandigarh',
-    ratePerKg: 12, rating: 4.6, totalRatings: 402,
-    routes: ['Chandigarh → Delhi', 'Chandigarh → Mumbai', 'Chandigarh → Shimla', 'Chandigarh → Dehradun'],
-    depotAddress: 'SpeedLine Depot, Industrial Area Phase II, Chandigarh 160002',
-    description: 'Express delivery specialist. Same-day and next-day delivery options.',
-    established: '2016', contactPhone: '9876500005'
-  },
-  {
-    id: 'tc-006', name: 'Khalsa Roadways', location: 'Bathinda, Punjab',
-    ratePerKg: 4, rating: 4.0, totalRatings: 145,
-    routes: ['Bathinda → Delhi', 'Bathinda → Chandigarh', 'Bathinda → Hisar', 'Bathinda → Patiala'],
-    depotAddress: 'Khalsa Roadways Terminal, Goniana Road, Bathinda, Punjab 151001',
-    description: 'Lowest rates in South Punjab. Specializing in agricultural products.',
-    established: '2010', contactPhone: '9876500006'
-  },
-];
-
-app.get('/gozo/transport-companies', (req, res) => {
-  res.json({ success: true, companies: TRANSPORT_COMPANIES });
+// ─── Transport Companies (from Supabase DB) ───
+app.get('/gozo/transport-companies', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { data, error } = await supabase
+      .from('transport_companies')
+      .select('*')
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    // Map DB snake_case to camelCase for app compatibility
+    const companies = (data || []).map(c => ({
+      id: c.id, name: c.name, location: c.location,
+      ratePerKg: Number(c.rate_per_kg) || 0,
+      rateDisplay: c.rate_display || '',
+      rating: Number(c.rating) || 0,
+      totalRatings: c.total_ratings || 0,
+      routes: c.routes || [],
+      depotAddress: c.depot_address || '',
+      description: c.description || '',
+      established: c.established || '',
+      contactPhone: c.contact_phone || '',
+      experience: c.experience || '',
+      deliveryTime: c.delivery_time || '',
+      additionalInfo: c.additional_info || '',
+    }));
+    res.json({ success: true, companies });
+  } catch (error) {
+    console.error('[GoZo] transport-companies error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 app.get('/gozo/company-images/:companyId', async (req, res) => {
@@ -1490,6 +1578,139 @@ app.get('/gozo/driver-history/:transporterId', async (req, res) => {
   }
 });
 
+
+// ─── Driver Stats (rating, trips, earnings from DB) ───
+app.get('/gozo/driver-stats/:transporterId', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) {
+      return;
+    }
+
+    const { transporterId } = req.params;
+
+    const { data: requests, error: requestsError } = await supabase
+      .from('requests')
+      .select('accepted_price, rating, status')
+      .eq('transporter_id', transporterId)
+      .in('status', ['matched', 'picked_up', 'on_the_way', 'completed']);
+
+    if (requestsError) {
+      throw requestsError;
+    }
+
+    const allTrips = requests ?? [];
+    const completedTrips = allTrips.filter(r => r.status === 'completed');
+    const totalTrips = allTrips.length;
+    const totalEarned = completedTrips.reduce((sum, r) => sum + (Number(r.accepted_price) || 0), 0);
+    const ratedTrips = completedTrips.filter(r => r.rating != null && r.rating > 0);
+    const avgRating = ratedTrips.length > 0
+      ? (ratedTrips.reduce((sum, r) => sum + Number(r.rating), 0) / ratedTrips.length).toFixed(1)
+      : null;
+
+    res.json({
+      success: true,
+      stats: {
+        totalTrips,
+        completedTrips: completedTrips.length,
+        totalEarned,
+        avgRating: avgRating ? parseFloat(avgRating) : null,
+      },
+    });
+  } catch (error) {
+    console.error('[GoZo] driver-stats error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Admin Panel API ───
+app.post('/admin/auth', (req, res) => {
+  const { pin } = req.body;
+  if (pin === ADMIN_PIN) {
+    res.json({ success: true, token: ADMIN_TOKEN });
+  } else {
+    res.status(401).json({ success: false, error: 'Invalid PIN' });
+  }
+});
+
+app.get('/admin/api/companies', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { data, error } = await supabase.from('transport_companies').select('*').order('created_at');
+    if (error) throw error;
+    res.json({ success: true, companies: data || [] });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.post('/admin/api/companies', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { id, name, location, rate_per_kg, rate_display, routes, depot_address, description, established, contact_phone, experience, delivery_time, additional_info } = req.body;
+    if (!id || !name) return res.status(400).json({ success: false, error: 'ID and Name are required' });
+    const { error } = await supabase.from('transport_companies').insert({ id, name, location, rate_per_kg: rate_per_kg || 0, rate_display, rating: 0, total_ratings: 0, routes: routes || [], depot_address, description, established, contact_phone, experience, delivery_time, additional_info });
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.put('/admin/api/companies/:id', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { id } = req.params;
+    const { name, location, rate_per_kg, rate_display, routes, depot_address, description, established, contact_phone, experience, delivery_time, additional_info } = req.body;
+    const { error } = await supabase.from('transport_companies').update({ name, location, rate_per_kg, rate_display, routes: routes || [], depot_address, description, established, contact_phone, experience, delivery_time, additional_info, updated_at: new Date().toISOString() }).eq('id', id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.delete('/admin/api/companies/:id', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { error } = await supabase.from('transport_companies').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.get('/admin/api/drivers', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { data, error } = await supabase.from('users').select('id, name, phone, created_at').eq('role', 'transporter').order('created_at', { ascending: false });
+    if (error) throw error;
+    res.json({ success: true, drivers: data || [] });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.post('/admin/api/drivers', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { name, phone } = req.body;
+    if (!name || !phone) return res.status(400).json({ success: false, error: 'Name and phone are required' });
+    const { data: existing } = await supabase.from('users').select('id').eq('phone', phone).maybeSingle();
+    if (existing) return res.status(409).json({ success: false, error: 'Phone number already registered' });
+    const { error } = await supabase.from('users').insert({ name, phone, role: 'transporter' });
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.delete('/admin/api/drivers/:id', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const driverId = req.params.id;
+    
+    // 1. Set transporter_id to null for requests where this driver is the transporter
+    await supabase.from('requests').update({ transporter_id: null }).eq('transporter_id', driverId);
+    
+    // 2. Delete requests where this driver was somehow registered as the owner (owner_id is NOT NULL)
+    await supabase.from('requests').delete().eq('owner_id', driverId);
+    
+    // 3. Delete the user
+    const { error } = await supabase.from('users').delete().eq('id', driverId).eq('role', 'transporter');
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
 
 app.get('/health', (req, res) => {
   res.json({

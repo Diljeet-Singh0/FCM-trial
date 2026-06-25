@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GoZo Admin Panel</title>
+  <meta name="description" content="GoZo Logistics Admin Dashboard — Manage companies and drivers">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Login Screen -->
+  <div id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <div class="login-logo">GoZo</div>
+      <div class="login-sub">Admin Panel</div>
+      <input type="password" id="pinInput" class="login-input" placeholder="Enter Admin PIN" maxlength="10">
+      <button id="loginBtn" class="login-btn" onclick="handleLogin()">Access Dashboard</button>
+      <p id="loginError" class="login-error"></p>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="dashboard hidden">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <span class="header-logo">GoZo</span>
+        <span class="header-title">Admin Panel</span>
+      </div>
+      <div class="header-right">
+        <span id="headerUser" class="header-user">🟢 Admin</span>
+        <button class="logout-btn" onclick="handleLogout()">Logout</button>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="companies" onclick="switchTab('companies')">🏢 Transport Companies</button>
+      <button class="tab" data-tab="drivers" onclick="switchTab('drivers')">🚛 Drivers</button>
+    </div>
+
+    <!-- Companies Tab -->
+    <div id="companiesTab" class="tab-content active">
+      <div class="tab-header">
+        <div>
+          <h2 class="tab-title">Transport Companies</h2>
+          <p class="tab-subtitle" id="companyCount">Loading...</p>
+        </div>
+        <button class="add-btn" onclick="openCompanyModal()">+ Add Company</button>
+      </div>
+      <div class="table-wrapper">
+        <table class="data-table" id="companiesTable">
+          <thead>
+            <tr>
+              <th>ID</th><th>Name</th><th>Location</th><th>Rate/kg</th>
+              <th>Rating</th><th>Phone</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="companiesBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Drivers Tab -->
+    <div id="driversTab" class="tab-content">
+      <div class="tab-header">
+        <div>
+          <h2 class="tab-title">Registered Drivers</h2>
+          <p class="tab-subtitle" id="driverCount">Loading...</p>
+        </div>
+        <button class="add-btn" onclick="openDriverModal()">+ Register Driver</button>
+      </div>
+      <div class="table-wrapper">
+        <table class="data-table" id="driversTable">
+          <thead>
+            <tr>
+              <th>Name</th><th>Phone</th><th>Registered</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="driversBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Company Modal -->
+  <div id="companyModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="companyModalTitle">Add Company</h3>
+        <button class="modal-close" onclick="closeCompanyModal()">&times;</button>
+      </div>
+      <form id="companyForm" onsubmit="handleCompanySubmit(event)">
+        <input type="hidden" id="companyEditId">
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Company ID</label>
+            <input type="text" id="cId" placeholder="tc-005" required>
+          </div>
+          <div class="form-group">
+            <label>Company Name</label>
+            <input type="text" id="cName" placeholder="Transport Co." required>
+          </div>
+          <div class="form-group">
+            <label>Location</label>
+            <input type="text" id="cLocation" placeholder="Punjab, Delhi">
+          </div>
+          <div class="form-group">
+            <label>Rate per Kg (₹)</label>
+            <input type="number" id="cRate" step="0.5" placeholder="5">
+          </div>
+          <div class="form-group">
+            <label>Rate Display</label>
+            <input type="text" id="cRateDisplay" placeholder="3-7">
+          </div>
+          <div class="form-group">
+            <label>Contact Phone</label>
+            <input type="text" id="cPhone" placeholder="9876543210">
+          </div>
+          <div class="form-group full-width">
+            <label>Depot Address</label>
+            <input type="text" id="cDepot" placeholder="Full depot address">
+          </div>
+          <div class="form-group full-width">
+            <label>Description</label>
+            <textarea id="cDesc" rows="2" placeholder="Brief description"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Established</label>
+            <input type="text" id="cEstablished" placeholder="1990">
+          </div>
+          <div class="form-group">
+            <label>Experience</label>
+            <input type="text" id="cExperience" placeholder="30+">
+          </div>
+          <div class="form-group">
+            <label>Delivery Time</label>
+            <input type="text" id="cDelivery" placeholder="3-5 days">
+          </div>
+          <div class="form-group">
+            <label>Additional Info</label>
+            <input type="text" id="cAdditional" placeholder="Extra notes">
+          </div>
+          <div class="form-group full-width">
+            <label>Routes (comma separated)</label>
+            <textarea id="cRoutes" rows="2" placeholder="Punjab, Haryana, Delhi"></textarea>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="cancel-btn" onclick="closeCompanyModal()">Cancel</button>
+          <button type="submit" class="submit-btn" id="companySubmitBtn">Add Company</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Driver Modal -->
+  <div id="driverModal" class="modal-overlay hidden">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3>Register New Driver</h3>
+        <button class="modal-close" onclick="closeDriverModal()">&times;</button>
+      </div>
+      <form id="driverForm" onsubmit="handleDriverSubmit(event)">
+        <div class="form-group">
+          <label>Driver Name</label>
+          <input type="text" id="dName" placeholder="Full name" required>
+        </div>
+        <div class="form-group">
+          <label>Phone Number</label>
+          <input type="text" id="dPhone" placeholder="10-digit number" maxlength="10" required>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="cancel-btn" onclick="closeDriverModal()">Cancel</button>
+          <button type="submit" class="submit-btn">Register Driver</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
