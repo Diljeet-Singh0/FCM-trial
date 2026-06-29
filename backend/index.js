@@ -1177,6 +1177,137 @@ app.get('/gozo/company-images/:companyId', async (req, res) => {
   }
 });
 
+// ─── Goods Responsibility Certificate ───
+const generateCertificateId = () => {
+  const now = new Date();
+  // Format date as YYYYMMDD in IST
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const ist = new Date(now.getTime() + istOffset);
+  const y = ist.getUTCFullYear();
+  const m = String(ist.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(ist.getUTCDate()).padStart(2, '0');
+  const dateStr = `${y}${m}${d}`;
+  // 6-char alphanumeric
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `GZC-${dateStr}-${code}`;
+};
+
+// Internal function to generate a goods certificate for a trip
+const generateGoodsCertificate = async (tripId) => {
+  if (!supabase) {
+    console.warn('[GoZo Certificate] Supabase not configured, skipping certificate generation');
+    return null;
+  }
+
+  // Check if certificate already exists
+  const { data: existing } = await supabase
+    .from('goods_certificates')
+    .select('id, certificate_id')
+    .eq('trip_id', tripId)
+    .maybeSingle();
+
+  if (existing) {
+    console.log(`[GoZo Certificate] Certificate already exists for trip ${tripId}: ${existing.certificate_id}`);
+    return existing;
+  }
+
+  // Fetch request details
+  const { data: requestRow, error: reqErr } = await supabase
+    .from('requests')
+    .select('id, owner_id, goods_type, weight_kg, pickup_address, drop_address, driver_name, driver_vehicle')
+    .eq('id', tripId)
+    .single();
+
+  if (reqErr || !requestRow) {
+    console.error('[GoZo Certificate] Failed to fetch request:', reqErr?.message);
+    return null;
+  }
+
+  // Fetch owner details
+  const { data: ownerRow, error: ownerErr } = await supabase
+    .from('users')
+    .select('name, factory_name, fcm_token')
+    .eq('id', requestRow.owner_id)
+    .single();
+
+  if (ownerErr || !ownerRow) {
+    console.error('[GoZo Certificate] Failed to fetch owner:', ownerErr?.message);
+    return null;
+  }
+
+  // Clean up goods_type (strip encoded distance)
+  let goodsDesc = requestRow.goods_type || 'General Goods';
+  const distMatch = goodsDesc.match(/_dist_[\d.]+/);
+  if (distMatch) goodsDesc = goodsDesc.replace(distMatch[0], '');
+
+  const pickupTimestamp = new Date().toISOString();
+  const certId = generateCertificateId();
+
+  const certData = {
+    certificate_id: certId,
+    trip_id: tripId,
+    factory_name: ownerRow.factory_name || ownerRow.name,
+    factory_owner_name: ownerRow.name,
+    driver_name: requestRow.driver_name || 'Driver',
+    vehicle_number: requestRow.driver_vehicle || 'N/A',
+    goods_description: `${goodsDesc} (${requestRow.weight_kg} kg)`,
+    pickup_location: requestRow.pickup_address,
+    drop_location: requestRow.drop_address,
+    pickup_timestamp: pickupTimestamp,
+  };
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from('goods_certificates')
+    .insert(certData)
+    .select()
+    .single();
+
+  if (insertErr) {
+    // Handle unique constraint violation (race condition)
+    if (insertErr.code === '23505') {
+      console.log(`[GoZo Certificate] Certificate already exists (race condition) for trip ${tripId}`);
+      const { data: reFetch } = await supabase
+        .from('goods_certificates')
+        .select('*')
+        .eq('trip_id', tripId)
+        .single();
+      return reFetch;
+    }
+    console.error('[GoZo Certificate] Insert error:', insertErr.message);
+    return null;
+  }
+
+  console.log(`[GoZo Certificate] Generated ${certId} for trip ${tripId}`);
+
+  // Send FCM notification to factory owner
+  if (admin.apps.length && ownerRow.fcm_token) {
+    try {
+      await admin.messaging().send({
+        token: ownerRow.fcm_token,
+        notification: {
+          title: '📋 Goods Certificate Issued',
+          body: 'Your Goods Responsibility Certificate has been issued by GoZo. Tap to view.'
+        },
+        data: {
+          type: 'CERTIFICATE_ISSUED',
+          tripId: tripId,
+          certificateId: certId
+        },
+        android: { priority: 'high' }
+      });
+      console.log(`[GoZo Certificate] FCM notification sent to owner for trip ${tripId}`);
+    } catch (fcmErr) {
+      console.error('[GoZo Certificate] FCM send error:', fcmErr.message);
+    }
+  }
+
+  return inserted;
+};
+
 // ─── Trip Status Updates ───
 const VALID_TRIP_STATUSES = ['picked_up', 'on_the_way', 'completed'];
 
@@ -1249,10 +1380,62 @@ app.post('/gozo/update-trip-status', async (req, res) => {
       });
     }
 
+    // Auto-generate Goods Responsibility Certificate on pickup
+    if (status === 'picked_up') {
+      try {
+        const cert = await generateGoodsCertificate(requestId);
+        if (cert) {
+          console.log(`[GoZo] Goods certificate auto-generated for trip ${requestId}: ${cert.certificate_id}`);
+        }
+      } catch (certErr) {
+        console.error('[GoZo] Certificate generation failed (non-blocking):', certErr.message);
+      }
+    }
+
     console.log(`[GoZo] Trip status updated: requestId=${requestId} status=${status}`);
     res.json({ success: true, status });
   } catch (error) {
     console.error('[GoZo] update-trip-status error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Certificate Endpoints ───
+app.post('/gozo/trips/:tripId/generate-certificate', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { tripId } = req.params;
+    if (!tripId) return res.status(400).json({ success: false, error: 'Missing tripId' });
+
+    const cert = await generateGoodsCertificate(tripId);
+    if (!cert) {
+      return res.status(500).json({ success: false, error: 'Failed to generate certificate' });
+    }
+    res.json({ success: true, certificate: cert });
+  } catch (error) {
+    console.error('[GoZo] generate-certificate error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/gozo/trips/:tripId/certificate', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { tripId } = req.params;
+    if (!tripId) return res.status(400).json({ success: false, error: 'Missing tripId' });
+
+    const { data: cert, error } = await supabase
+      .from('goods_certificates')
+      .select('*')
+      .eq('trip_id', tripId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!cert) return res.status(404).json({ success: false, error: 'No certificate found for this trip' });
+
+    res.json({ success: true, certificate: cert });
+  } catch (error) {
+    console.error('[GoZo] fetch-certificate error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
