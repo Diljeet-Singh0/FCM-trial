@@ -111,6 +111,191 @@ function renderCompanies() {
   </tr>`).join('');
 }
 
+let stateGroupCount = 0;
+
+function addRouteGroupState(stateData = null) {
+  const container = document.getElementById('routeGroupsContainer');
+  const cardId = 'state-group-' + (++stateGroupCount);
+  
+  const card = document.createElement('div');
+  card.className = 'state-group-card';
+  card.id = cardId;
+  
+  const stateName = stateData ? stateData.state : '';
+  const priceMin = stateData ? (stateData.price_min ?? '') : '';
+  const priceMax = stateData ? (stateData.price_max ?? '') : '';
+  const deliveryDaysMin = stateData ? (stateData.delivery_days_min ?? '') : '';
+  const deliveryDaysMax = stateData ? (stateData.delivery_days_max ?? '') : '';
+  
+  let standardCitiesStr = '';
+  if (stateData && stateData.cities) {
+    const stdNames = stateData.cities
+      .filter(c => c.price_min == null && c.price_max == null && c.delivery_days_min == null && c.delivery_days_max == null)
+      .map(c => c.name);
+    standardCitiesStr = stdNames.join(', ');
+  }
+
+  card.innerHTML = `
+    <div class="state-group-header">
+      <span class="state-group-title">📍 State Route Group</span>
+      <button type="button" class="remove-state-btn" onclick="removeRouteGroupState('${cardId}')">Remove</button>
+    </div>
+    <div class="state-grid">
+      <div class="form-group">
+        <label>State Name</label>
+        <input type="text" class="state-name-input" placeholder="e.g. Punjab" value="${esc(stateName)}" required>
+      </div>
+      <div class="form-group">
+        <label>Base Price Min (₹)</label>
+        <input type="number" class="state-price-min" step="0.5" placeholder="Min Price" value="${priceMin}">
+      </div>
+      <div class="form-group">
+        <label>Base Price Max (₹)</label>
+        <input type="number" class="state-price-max" step="0.5" placeholder="Max Price" value="${priceMax}">
+      </div>
+      <div class="form-group">
+        <label>Base Days Min</label>
+        <input type="number" class="state-days-min" placeholder="Min Days" value="${deliveryDaysMin}">
+      </div>
+      <div class="form-group">
+        <label>Base Days Max</label>
+        <input type="number" class="state-days-max" placeholder="Max Days" value="${deliveryDaysMax}">
+      </div>
+    </div>
+    <div class="form-group" style="margin-top: 10px;">
+      <label>Standard Cities (comma separated)</label>
+      <input type="text" class="state-cities-list" placeholder="Ludhiana, Jalandhar, Amritsar" value="${esc(standardCitiesStr)}">
+    </div>
+    
+    <div class="custom-cities-section">
+      <div class="custom-cities-header">
+        <span>Custom City Override Pricing</span>
+        <button type="button" class="add-city-btn" onclick="addCustomCityRow('${cardId}')">+ Add Custom City Price</button>
+      </div>
+      <div class="custom-cities-list-container">
+        <!-- Custom city rows go here -->
+      </div>
+    </div>
+  `;
+  
+  container.appendChild(card);
+  
+  if (stateData && stateData.cities) {
+    const customCities = stateData.cities.filter(c => 
+      c.price_min != null || c.price_max != null || c.delivery_days_min != null || c.delivery_days_max != null
+    );
+    customCities.forEach(city => {
+      addCustomCityRow(cardId, city);
+    });
+  }
+}
+
+function removeRouteGroupState(cardId) {
+  const el = document.getElementById(cardId);
+  if (el) el.remove();
+}
+
+function addCustomCityRow(cardId, cityData = null) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const container = card.querySelector('.custom-cities-list-container');
+  
+  const row = document.createElement('div');
+  row.className = 'custom-city-row';
+  
+  const cityName = cityData ? cityData.name : '';
+  const priceMin = cityData ? (cityData.price_min ?? '') : '';
+  const priceMax = cityData ? (cityData.price_max ?? '') : '';
+  const daysMin = cityData ? (cityData.delivery_days_min ?? '') : '';
+  const daysMax = cityData ? (cityData.delivery_days_max ?? '') : '';
+  
+  row.innerHTML = `
+    <input type="text" class="city-name" placeholder="City Name" value="${esc(cityName)}" required style="grid-column: span 1">
+    <input type="number" class="city-price-min" step="0.5" placeholder="Min ₹" value="${priceMin}">
+    <input type="number" class="city-price-max" step="0.5" placeholder="Max ₹" value="${priceMax}">
+    <input type="number" class="city-days-min" placeholder="Min Days" value="${daysMin}">
+    <input type="number" class="city-days-max" placeholder="Max Days" value="${daysMax}">
+    <button type="button" class="remove-city-btn" onclick="this.parentElement.remove()">✕</button>
+  `;
+  
+  container.appendChild(row);
+}
+
+function serializeRouteBuilder() {
+  const routesV2 = [];
+  const cards = document.querySelectorAll('.state-group-card');
+  
+  cards.forEach(card => {
+    const stateName = card.querySelector('.state-name-input').value.trim();
+    if (!stateName) return;
+    
+    const priceMinVal = card.querySelector('.state-price-min').value;
+    const priceMaxVal = card.querySelector('.state-price-max').value;
+    const daysMinVal = card.querySelector('.state-days-min').value;
+    const daysMaxVal = card.querySelector('.state-days-max').value;
+    
+    const stateGroup = {
+      state: stateName,
+      price_min: priceMinVal ? parseFloat(priceMinVal) : null,
+      price_max: priceMaxVal ? parseFloat(priceMaxVal) : null,
+      delivery_days_min: daysMinVal ? parseInt(daysMinVal, 10) : null,
+      delivery_days_max: daysMaxVal ? parseInt(daysMaxVal, 10) : null,
+      cities: []
+    };
+    
+    const stdCitiesStr = card.querySelector('.state-cities-list').value;
+    if (stdCitiesStr) {
+      const names = stdCitiesStr.split(',').map(n => n.trim()).filter(Boolean);
+      names.forEach(name => {
+        stateGroup.cities.push({ name });
+      });
+    }
+    
+    const cityRows = card.querySelectorAll('.custom-city-row');
+    cityRows.forEach(row => {
+      const cityName = row.querySelector('.city-name').value.trim();
+      if (!cityName) return;
+      
+      const cityPriceMin = row.querySelector('.city-price-min').value;
+      const cityPriceMax = row.querySelector('.city-price-max').value;
+      const cityDaysMin = row.querySelector('.city-days-min').value;
+      const cityDaysMax = row.querySelector('.city-days-max').value;
+      
+      stateGroup.cities.push({
+        name: cityName,
+        price_min: cityPriceMin ? parseFloat(cityPriceMin) : null,
+        price_max: cityPriceMax ? parseFloat(cityPriceMax) : null,
+        delivery_days_min: cityDaysMin ? parseInt(cityDaysMin, 10) : null,
+        delivery_days_max: cityDaysMax ? parseInt(cityDaysMax, 10) : null
+      });
+    });
+    
+    routesV2.push(stateGroup);
+  });
+  
+  return routesV2;
+}
+
+function generateLegacyRoutes(routesV2) {
+  const routes = [];
+  routesV2.forEach(rg => {
+    if (rg.state) {
+      if (rg.cities && rg.cities.length > 0) {
+        rg.cities.forEach(c => {
+          routes.push(`${rg.state} - ${c.name}`);
+        });
+      } else {
+        routes.push(rg.state);
+      }
+    }
+  });
+  return routes;
+}
+
+window.addRouteGroupState = addRouteGroupState;
+window.removeRouteGroupState = removeRouteGroupState;
+window.addCustomCityRow = addCustomCityRow;
+
 function openCompanyModal(data = null) {
   document.getElementById('companyModal').classList.remove('hidden');
   document.getElementById('companyModalTitle').textContent = data ? 'Edit Company' : 'Add Company';
@@ -145,12 +330,38 @@ function openCompanyModal(data = null) {
   document.getElementById('cExperience').value = data?.experience || '';
   document.getElementById('cDelivery').value = data?.delivery_time || '';
   document.getElementById('cAdditional').value = data?.additional_info || '';
-  document.getElementById('cRoutes').value = data?.routes ? (Array.isArray(data.routes) ? data.routes.join(', ') : data.routes) : '';
+  
+  // Populate Images
+  document.getElementById('cImages').value = data?.images ? (Array.isArray(data.images) ? data.images.join('\n') : data.images) : '';
+
+  // Populate Route Groups
+  document.getElementById('routeGroupsContainer').innerHTML = '';
+  if (data && data.routes_v2 && data.routes_v2.length > 0) {
+    data.routes_v2.forEach(rg => addRouteGroupState(rg));
+  } else if (data && data.routes && data.routes.length > 0) {
+    const statesMap = {};
+    data.routes.forEach(rStr => {
+      const parts = rStr.split('-').map(p => p.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        const st = parts[0];
+        const ct = parts[1];
+        if (!statesMap[st]) statesMap[st] = [];
+        statesMap[st].push({ name: ct });
+      } else if (parts.length === 1) {
+        const st = parts[0];
+        if (!statesMap[st]) statesMap[st] = [];
+      }
+    });
+    Object.entries(statesMap).forEach(([state, cities]) => {
+      addRouteGroupState({ state, cities });
+    });
+  }
 }
 
 function closeCompanyModal() {
   document.getElementById('companyModal').classList.add('hidden');
   document.getElementById('companyForm').reset();
+  document.getElementById('routeGroupsContainer').innerHTML = '';
 }
 
 function editCompany(id) {
@@ -161,8 +372,12 @@ function editCompany(id) {
 async function handleCompanySubmit(e) {
   e.preventDefault();
   const editId = document.getElementById('companyEditId').value;
-  const routesRaw = document.getElementById('cRoutes').value;
-  const routes = routesRaw ? routesRaw.split(',').map(r => r.trim()).filter(Boolean) : [];
+  
+  const imagesRaw = document.getElementById('cImages').value;
+  const images = imagesRaw ? imagesRaw.split('\n').map(img => img.trim()).filter(Boolean) : [];
+
+  const routesV2 = serializeRouteBuilder();
+  const routes = generateLegacyRoutes(routesV2);
 
   const body = {
     id: document.getElementById('cId').value.trim(),
@@ -178,6 +393,8 @@ async function handleCompanySubmit(e) {
     delivery_time: document.getElementById('cDelivery').value.trim(),
     additional_info: document.getElementById('cAdditional').value.trim(),
     routes,
+    routes_v2: routesV2,
+    images
   };
 
   try {

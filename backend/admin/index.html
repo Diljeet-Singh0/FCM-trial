@@ -144,8 +144,17 @@
             <input type="text" id="cAdditional" placeholder="Extra notes">
           </div>
           <div class="form-group full-width">
-            <label>Routes (comma separated)</label>
-            <textarea id="cRoutes" rows="2" placeholder="Punjab, Haryana, Delhi"></textarea>
+            <label>Image URLs (one per line)</label>
+            <textarea id="cImages" rows="3" placeholder="https://images.unsplash.com/...&#10;https://images.unsplash.com/..."></textarea>
+          </div>
+          <div class="form-group full-width">
+            <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+              <span>Route Coverage Groups</span>
+              <button type="button" class="add-route-btn" onclick="addRouteGroupState()">+ Add State Group</button>
+            </label>
+            <div id="routeGroupsContainer" class="route-groups-container">
+              <!-- Dynamic state group cards will be appended here -->
+            </div>
           </div>
         </div>
         <div class="modal-actions">

@@ -304,13 +304,16 @@ app.post('/gozo/auth/login', async (req, res) => {
       const formattedPhone = formatE164(phone);
       console.log(`[Twilio Verify] Requesting OTP for ${formattedPhone}...`);
 
-      try {
-        await twilioClient.verify.v2
-          .services(twilioVerifyServiceSid)
-          .verifications.create({ to: formattedPhone, channel: 'sms' });
-      } catch (err) {
-        console.warn('[Twilio Verify] SMS failed, bypassing. Use 123456 to verify. Error:', err.message);
-      }
+      // Fire and forget asynchronously to prevent blocking the HTTP response
+      twilioClient.verify.v2
+        .services(twilioVerifyServiceSid)
+        .verifications.create({ to: formattedPhone, channel: 'sms' })
+        .then(() => {
+          console.log(`[Twilio Verify] SMS OTP sent successfully to ${formattedPhone}`);
+        })
+        .catch((err) => {
+          console.warn('[Twilio Verify] SMS failed in background, bypassing. Use 123456 to verify. Error:', err.message);
+        });
     }
 
     // Track successful OTP request for rate limiting
@@ -398,7 +401,7 @@ app.post('/gozo/auth/verify', async (req, res) => {
 app.post('/gozo/auth/signup', async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { phone, name, role, factory_name, factory_address, factory_lat, factory_lng, fcmToken } = req.body;
+    const { phone, name, role, factory_name, factory_address, factory_lat, factory_lng, fcmToken, city } = req.body;
 
     if (!phone || !name || !role) {
       return res.status(400).json({ success: false, error: 'Phone, name, and role are required' });
@@ -425,6 +428,15 @@ app.post('/gozo/auth/signup', async (req, res) => {
       return res.status(409).json({ success: false, error: 'Phone number is already registered. Please log in.' });
     }
 
+    // Auto-extract city if not provided
+    let finalCity = city || null;
+    if (!finalCity && factory_address) {
+      const parts = factory_address.split(',').map(p => p.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        finalCity = parts[parts.length - 2].replace(/\d+/g, '').trim();
+      }
+    }
+
     // Insert user
     const { data, error } = await supabase
       .from('users')
@@ -436,7 +448,8 @@ app.post('/gozo/auth/signup', async (req, res) => {
         factory_name: factory_name || null,
         factory_address: factory_address || null,
         factory_lat: factory_lat || null,
-        factory_lng: factory_lng || null
+        factory_lng: factory_lng || null,
+        city: finalCity
       })
       .select('id, name, role')
       .single();
@@ -1095,11 +1108,232 @@ app.get('/gozo/transport-companies', async (req, res) => {
   }
 });
 
+// ─── Static Indian state to cities lookup ───
+const STATE_CITY_MAP = {
+  'West Bengal': ['Kolkata', 'Siliguri', 'Darjeeling', 'Cooch Behar', 'Jaigaon', 'Dinhata'],
+  'Maharashtra': ['Mumbai', 'Pune', 'Nagpur'],
+  'Karnataka': ['Bangalore', 'Mysore', 'Hubli'],
+  'Punjab': [
+    'Amritsar', 'Ajnala', 'Batala', 'Gurdaspur', 'Pathankot', 'Hoshiarpur',
+    'Jalandhar', 'Phagwara', 'Nakodar', 'Kapurthala', 'Sultanpur Lodhi',
+    'Nawanshahr', 'Balachaur', 'Ludhiana', 'Doraha', 'Khanna', 'Samrala',
+    'Mandi Gobindgarh', 'Sirhind', 'Rajpura', 'Patiala', 'Nabha',
+    'Malerkotla', 'Ahmedgarh', 'Barnala', 'Sangrur', 'Sunam', 'Lehragaga',
+    'Dhuri', 'Raikot', 'Jagraon', 'Moga', 'Kotkapura', 'Faridkot',
+    'Ferozepur', 'Fazilka', 'Zira', 'Jalalabad', 'Muktsar', 'Abohar',
+    'Tarn Taran', 'Patti', 'Khemkaran', 'Dasuya', 'Mukerian'
+  ],
+  'Haryana': ['Ambala', 'Ambala City', 'Ambala Cantt', 'Shahbad', 'Kurukshetra', 'Karnal', 'Panipat', 'Sonipat'],
+  'Jammu & Kashmir': ['Jammu', 'Kathua', 'Samba', 'Dori Brahmana', 'Vijaypur'],
+  'Delhi': ['Delhi'],
+  'Himachal Pradesh': ['Baddi', 'Damtal'],
+  'Assam': ['Guwahati', 'Shillong', 'Jorhat', 'Dibrugarh', 'Tinsukia', 'Silchar', 'Karimganj', 'Agartala', 'Lalabazar', 'Aizawl', 'Hailakandi', 'Dharmanagar', 'Imphal', 'Dimapur', 'Nagaon', 'Lanka', 'Gola Ghat', 'Hojai'],
+  'Bihar': ['Patna Jn', 'Patna City', 'Gaya', 'Siwan', 'Chapra', 'Muzaffarpur', 'Darbhanga', 'Sitamarhi', 'Samastipur', 'Raxaul', 'Purnea', 'Forbesganj', 'Katihar', 'Jogbani', 'Bhagalpur', 'Araria'],
+  'Odisha': ['Cuttack', 'Bhubaneswar', 'Puri', 'Sambalpur', 'Rourkela', 'Berhampur', 'Jharsuguda'],
+  'Jharkhand': ['Ranchi', 'Dhanbad', 'Jamshedpur', 'Tatanagar', 'Asansol', 'Chas', 'Giridih']
+};
+
+function cityToState(cityName) {
+  if (!cityName) return null;
+  const lowerCity = cityName.trim().toLowerCase();
+  for (const [state, cities] of Object.entries(STATE_CITY_MAP)) {
+    if (cities.some(c => c.toLowerCase() === lowerCity)) {
+      return state;
+    }
+  }
+  return null;
+}
+
+// ─── Search Destinations Autocomplete ───
+app.get('/gozo/transport-companies/destinations', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { data: companies, error } = await supabase
+      .from('transport_companies')
+      .select('routes_v2');
+
+    if (error) throw error;
+
+    const destinationsMap = new Map();
+
+    // Populate from static map
+    for (const [stateName, cities] of Object.entries(STATE_CITY_MAP)) {
+      destinationsMap.set(`${stateName}_state`, { name: stateName, type: 'state', state: stateName });
+      for (const cityName of cities) {
+        destinationsMap.set(`${cityName}_city`, { name: cityName, type: 'city', state: stateName });
+      }
+    }
+
+    // Populate dynamic entries from DB
+    if (companies) {
+      for (const c of companies) {
+        const routes = c.routes_v2 || [];
+        for (const r of routes) {
+          if (r.state) {
+            const stateName = r.state.trim();
+            if (!destinationsMap.has(`${stateName}_state`)) {
+              destinationsMap.set(`${stateName}_state`, { name: stateName, type: 'state', state: stateName });
+            }
+            if (r.cities) {
+              for (const city of r.cities) {
+                if (city.name) {
+                  const cityName = city.name.trim();
+                  if (!destinationsMap.has(`${cityName}_city`)) {
+                    destinationsMap.set(`${cityName}_city`, { name: cityName, type: 'city', state: stateName });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const destinations = Array.from(destinationsMap.values());
+    destinations.sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({ success: true, destinations });
+  } catch (error) {
+    console.error('[GoZo] Destinations error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Search Transport Companies ───
+app.get('/gozo/transport-companies/search', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { destination } = req.query;
+    if (!destination) {
+      return res.status(400).json({ success: false, error: 'Destination is required' });
+    }
+
+    const destLower = destination.trim().toLowerCase();
+
+    const { data: rawCompanies, error } = await supabase
+      .from('transport_companies')
+      .select('*')
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+
+    const results = [];
+    const isStateQuery = Object.keys(STATE_CITY_MAP).some(s => s.toLowerCase() === destLower);
+    const resolvedState = isStateQuery ? null : cityToState(destination);
+
+    for (const c of rawCompanies) {
+      const routesV2 = c.routes_v2 || [];
+      let matchType = null;
+      let matchedRoute = null;
+      let matchedCity = null;
+
+      if (isStateQuery) {
+        matchedRoute = routesV2.find(r => r.state.toLowerCase() === destLower);
+        if (matchedRoute) {
+          matchType = 'state';
+        }
+      } else if (resolvedState) {
+        matchedRoute = routesV2.find(r => r.state.toLowerCase() === resolvedState.toLowerCase());
+        if (matchedRoute) {
+          matchedCity = matchedRoute.cities?.find(ct => ct.name.toLowerCase() === destLower);
+          if (matchedCity) {
+            matchType = 'city';
+          } else {
+            matchType = 'state';
+          }
+        }
+      } else {
+        // Fallback fuzzy substring
+        matchedRoute = routesV2.find(r => {
+          if (r.state.toLowerCase().includes(destLower)) {
+            matchType = 'state';
+            return true;
+          }
+          const cityMatch = r.cities?.find(ct => ct.name.toLowerCase().includes(destLower));
+          if (cityMatch) {
+            matchedCity = cityMatch;
+            matchType = 'city';
+            return true;
+          }
+          return false;
+        });
+      }
+
+      if (matchType) {
+        const price_min = (matchedCity && matchedCity.price_min != null) ? matchedCity.price_min
+                          : (matchedRoute && matchedRoute.price_min != null) ? matchedRoute.price_min
+                          : Number(c.rate_per_kg) || 0;
+
+        const price_max = (matchedCity && matchedCity.price_max != null) ? matchedCity.price_max
+                          : (matchedRoute && matchedRoute.price_max != null) ? matchedRoute.price_max
+                          : Number(c.rate_per_kg) || 0;
+
+        const delivery_days_min = (matchedCity && matchedCity.delivery_days_min != null) ? matchedCity.delivery_days_min
+                                  : (matchedRoute && matchedRoute.delivery_days_min != null) ? matchedRoute.delivery_days_min
+                                  : parseInt(c.delivery_time) || 1;
+
+        const delivery_days_max = (matchedCity && matchedCity.delivery_days_max != null) ? matchedCity.delivery_days_max
+                                  : (matchedRoute && matchedRoute.delivery_days_max != null) ? matchedRoute.delivery_days_max
+                                  : parseInt(c.delivery_time) || 7;
+
+        results.push({
+          id: c.id,
+          name: c.name,
+          location: c.location,
+          rating: Number(c.rating) || 0,
+          totalRatings: c.total_ratings || 0,
+          depotAddress: c.depot_address || '',
+          description: c.description || '',
+          established: c.established || '',
+          contactPhone: c.contact_phone || '',
+          experience: c.experience || '',
+          additionalInfo: c.additional_info || '',
+          routes: c.routes || [],
+          routes_v2: routesV2,
+          images: c.images || [],
+          matchType,
+          priceMin: price_min,
+          priceMax: price_max,
+          deliveryDaysMin: delivery_days_min,
+          deliveryDaysMax: delivery_days_max
+        });
+      }
+    }
+
+    results.sort((a, b) => {
+      if (a.matchType === b.matchType) {
+        return a.name.localeCompare(b.name);
+      }
+      return a.matchType === 'city' ? -1 : 1;
+    });
+
+    res.json({ success: true, companies: results });
+  } catch (error) {
+    console.error('[GoZo] Search error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.get('/gozo/company-images/:companyId', async (req, res) => {
   try {
     const { companyId } = req.params;
     if (!companyId) {
       return res.status(400).json({ success: false, error: 'Missing companyId' });
+    }
+
+    // Check DB first
+    try {
+      const { data: dbComp } = await supabase
+        .from('transport_companies')
+        .select('images')
+        .eq('id', companyId)
+        .maybeSingle();
+
+      if (dbComp && dbComp.images && dbComp.images.length > 0) {
+        return res.json({ success: true, images: dbComp.images });
+      }
+    } catch (err) {
+      console.warn('[GoZo] Failed to fetch company images from DB column:', err.message);
     }
 
     const fallbackImages = {
@@ -1827,9 +2061,9 @@ app.get('/admin/api/companies', requireAdmin, async (req, res) => {
 app.post('/admin/api/companies', requireAdmin, async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { id, name, location, rate_per_kg, rate_display, routes, depot_address, description, established, contact_phone, experience, delivery_time, additional_info } = req.body;
+    const { id, name, location, rate_per_kg, rate_display, routes, routes_v2, images, depot_address, description, established, contact_phone, experience, delivery_time, additional_info } = req.body;
     if (!id || !name) return res.status(400).json({ success: false, error: 'ID and Name are required' });
-    const { error } = await supabase.from('transport_companies').insert({ id, name, location, rate_per_kg: rate_per_kg || 0, rate_display, rating: 0, total_ratings: 0, routes: routes || [], depot_address, description, established, contact_phone, experience, delivery_time, additional_info });
+    const { error } = await supabase.from('transport_companies').insert({ id, name, location, rate_per_kg: rate_per_kg || 0, rate_display, rating: 0, total_ratings: 0, routes: routes || [], routes_v2: routes_v2 || [], images: images || [], depot_address, description, established, contact_phone, experience, delivery_time, additional_info });
     if (error) throw error;
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
@@ -1839,8 +2073,8 @@ app.put('/admin/api/companies/:id', requireAdmin, async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
     const { id } = req.params;
-    const { name, location, rate_per_kg, rate_display, routes, depot_address, description, established, contact_phone, experience, delivery_time, additional_info } = req.body;
-    const { error } = await supabase.from('transport_companies').update({ name, location, rate_per_kg, rate_display, routes: routes || [], depot_address, description, established, contact_phone, experience, delivery_time, additional_info, updated_at: new Date().toISOString() }).eq('id', id);
+    const { name, location, rate_per_kg, rate_display, routes, routes_v2, images, depot_address, description, established, contact_phone, experience, delivery_time, additional_info } = req.body;
+    const { error } = await supabase.from('transport_companies').update({ name, location, rate_per_kg, rate_display, routes: routes || [], routes_v2: routes_v2 || [], images: images || [], depot_address, description, established, contact_phone, experience, delivery_time, additional_info, updated_at: new Date().toISOString() }).eq('id', id);
     if (error) throw error;
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
@@ -1903,6 +2137,110 @@ app.get('/health', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Backend listening on port ${PORT}`);
+  // Run startup migration checks
+  await runStartupMigration();
 });
+
+async function runStartupMigration() {
+  if (!supabase) return;
+  console.log('[Migration] Running startup check...');
+  try {
+    // 1. Create columns if they do not exist
+    const { error: testRoutesV2 } = await supabase.from('transport_companies').select('routes_v2').limit(1);
+    if (testRoutesV2 && testRoutesV2.message.includes('does not exist')) {
+      console.log('[Migration] Column routes_v2 is missing. Running DDL...');
+      await supabase.rpc('exec_sql', { sql: `ALTER TABLE transport_companies ADD COLUMN IF NOT EXISTS routes_v2 JSONB DEFAULT '[]'::jsonb;` }).maybeSingle();
+    }
+    
+    const { error: testImages } = await supabase.from('transport_companies').select('images').limit(1);
+    if (testImages && testImages.message.includes('does not exist')) {
+      console.log('[Migration] Column images is missing. Running DDL...');
+      await supabase.rpc('exec_sql', { sql: `ALTER TABLE transport_companies ADD COLUMN IF NOT EXISTS images JSONB DEFAULT '[]'::jsonb;` }).maybeSingle();
+    }
+
+    const { error: testUserCity } = await supabase.from('users').select('city').limit(1);
+    if (testUserCity && testUserCity.message.includes('does not exist')) {
+      console.log('[Migration] Column users.city is missing. Running DDL...');
+      await supabase.rpc('exec_sql', { sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;` }).maybeSingle();
+    }
+
+    // 2. Populate routes_v2
+    const { data: companies } = await supabase.from('transport_companies').select('id, name, routes, routes_v2');
+    if (companies) {
+      const DETAILED_ROUTES_V2 = {
+        'tc-001': [{ state: 'West Bengal', cities: [{ name: 'Kolkata' }], price_min: 4, price_max: 8, delivery_days_min: 5, delivery_days_max: 7 }],
+        'tc-002': [
+          { state: 'Maharashtra', cities: [{ name: 'Mumbai' }, { name: 'Pune' }, { name: 'Nagpur' }], price_min: 5, price_max: 7, delivery_days_min: 5, delivery_days_max: 6 },
+          { state: 'Karnataka', cities: [{ name: 'Bangalore' }, { name: 'Mysore' }, { name: 'Hubli' }], price_min: 5, price_max: 7, delivery_days_min: 5, delivery_days_max: 6 }
+        ],
+        'tc-003': [
+          {
+            state: 'Punjab',
+            cities: [
+              { name: 'Amritsar', price_min: 2, price_max: 3, delivery_days_min: 1, delivery_days_max: 2 },
+              { name: 'Ajnala' }, { name: 'Batala' }, { name: 'Gurdaspur' },
+              { name: 'Pathankot', price_min: 2, price_max: 3 },
+              { name: 'Hoshiarpur' }, { name: 'Jalandhar', price_min: 2, price_max: 3, delivery_days_min: 1, delivery_days_max: 1 },
+              { name: 'Phagwara' }, { name: 'Nakodar' }, { name: 'Kapurthala' },
+              { name: 'Sultanpur Lodhi' }, { name: 'Nawanshahr' }, { name: 'Balachaur' },
+              { name: 'Ludhiana', price_min: 2, price_max: 2.5, delivery_days_min: 1, delivery_days_max: 1 },
+              { name: 'Doraha' }, { name: 'Khanna' }, { name: 'Samrala' },
+              { name: 'Mandi Gobindgarh' }, { name: 'Sirhind' }, { name: 'Rajpura' },
+              { name: 'Patiala', price_min: 2, price_max: 3 },
+              { name: 'Nabha' }, { name: 'Malerkotla' }, { name: 'Ahmedgarh' },
+              { name: 'Barnala' }, { name: 'Sangrur' }, { name: 'Sunam' },
+              { name: 'Lehragaga' }, { name: 'Dhuri' }, { name: 'Raikot' },
+              { name: 'Jagraon' }, { name: 'Moga' }, { name: 'Kotkapura' },
+              { name: 'Faridkot' }, { name: 'Ferozepur' }, { name: 'Fazilka' },
+              { name: 'Zira' }, { name: 'Jalalabad' }, { name: 'Muktsar' },
+              { name: 'Abohar' }, { name: 'Tarn Taran' }, { name: 'Patti' },
+              { name: 'Khemkaran' }, { name: 'Dasuya' }, { name: 'Mukerian' }
+            ],
+            price_min: 2, price_max: 4, delivery_days_min: 1, delivery_days_max: 2
+          },
+          { state: 'Haryana', cities: [{ name: 'Ambala' }, { name: 'Ambala City' }, { name: 'Ambala Cantt' }, { name: 'Shahbad' }, { name: 'Kurukshetra' }, { name: 'Karnal' }, { name: 'Panipat' }, { name: 'Sonipat' }], price_min: 2, price_max: 4, delivery_days_min: 1, delivery_days_max: 2 },
+          { state: 'Jammu & Kashmir', cities: [{ name: 'Jammu' }, { name: 'Kathua' }, { name: 'Samba' }, { name: 'Dori Brahmana' }, { name: 'Vijaypur' }], price_min: 3, price_max: 4, delivery_days_min: 2, delivery_days_max: 3 },
+          { state: 'Delhi', cities: [{ name: 'Delhi', price_min: 2.5, price_max: 3.5, delivery_days_min: 1, delivery_days_max: 2 }], price_min: 2.5, price_max: 3.5, delivery_days_min: 1, delivery_days_max: 2 },
+          { state: 'Himachal Pradesh', cities: [{ name: 'Baddi' }, { name: 'Damtal' }], price_min: 3, price_max: 4, delivery_days_min: 2, delivery_days_max: 3 }
+        ],
+        'tc-004': [
+          { state: 'Assam', cities: [{ name: 'Guwahati' }, { name: 'Shillong' }, { name: 'Jorhat' }, { name: 'Dibrugarh' }, { name: 'Tinsukia' }, { name: 'Silchar' }, { name: 'Karimganj' }, { name: 'Agartala' }, { name: 'Lalabazar' }, { name: 'Aizawl' }, { name: 'Hailakandi' }, { name: 'Dharmanagar' }, { name: 'Imphal' }, { name: 'Dimapur' }, { name: 'Nagaon' }, { name: 'Lanka' }, { name: 'Gola Ghat' }, { name: 'Hojai' }], price_min: 2, price_max: 3, delivery_days_min: 10, delivery_days_max: 20 },
+          { state: 'Bihar', cities: [{ name: 'Patna Jn' }, { name: 'Patna City' }, { name: 'Gaya' }, { name: 'Siwan' }, { name: 'Chapra' }, { name: 'Muzaffarpur' }, { name: 'Darbhanga' }, { name: 'Sitamarhi' }, { name: 'Samastipur' }, { name: 'Raxaul' }, { name: 'Purnea' }, { name: 'Forbesganj' }, { name: 'Katihar' }, { name: 'Jogbani' }, { name: 'Bhagalpur' }, { name: 'Araria' }], price_min: 2, price_max: 3, delivery_days_min: 7, delivery_days_max: 14 },
+          { state: 'West Bengal', cities: [{ name: 'Kolkata' }, { name: 'Siliguri' }, { name: 'Darjeeling' }, { name: 'Cooch Behar' }, { name: 'Jaigaon' }, { name: 'Dinhata' }], price_min: 2, price_max: 3, delivery_days_min: 7, delivery_days_max: 12 },
+          { state: 'Odisha', cities: [{ name: 'Cuttack' }, { name: 'Bhubaneswar' }, { name: 'Puri' }, { name: 'Sambalpur' }, { name: 'Rourkela' }, { name: 'Berhampur' }, { name: 'Jharsuguda' }], price_min: 2, price_max: 3, delivery_days_min: 10, delivery_days_max: 15 },
+          { state: 'Jharkhand', cities: [{ name: 'Ranchi' }, { name: 'Dhanbad' }, { name: 'Jamshedpur' }, { name: 'Tatanagar' }, { name: 'Asansol' }, { name: 'Chas' }, { name: 'Giridih' }], price_min: 2, price_max: 3, delivery_days_min: 7, delivery_days_max: 12 }
+        ]
+      };
+
+      for (const comp of companies) {
+        if (!comp.routes_v2 || comp.routes_v2.length === 0) {
+          const routesV2 = DETAILED_ROUTES_V2[comp.id] || [];
+          if (routesV2.length > 0) {
+            console.log(`[Migration] Migrating ${comp.id} routes_v2...`);
+            await supabase.from('transport_companies').update({ routes_v2: routesV2 }).eq('id', comp.id);
+          }
+        }
+      }
+    }
+
+    // 3. Populate user city from factory_address
+    const { data: users } = await supabase.from('users').select('id, factory_address, city').is('city', null).not('factory_address', 'is', null);
+    if (users) {
+      for (const u of users) {
+        const parts = u.factory_address.split(',').map(p => p.trim()).filter(Boolean);
+        if (parts.length >= 2) {
+          const city = parts[parts.length - 2].replace(/\d+/g, '').trim();
+          if (city) {
+            console.log(`[Migration] Extracting city "${city}" for user ${u.id}`);
+            await supabase.from('users').update({ city }).eq('id', u.id);
+          }
+        }
+      }
+    }
+    console.log('[Migration] Startup migration checks done.');
+  } catch (err) {
+    console.error('[Migration] Error during startup migration:', err.message);
+  }
+}
