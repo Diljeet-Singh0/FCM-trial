@@ -85,19 +85,26 @@ async function loadCompanies() {
   try {
     const r = await fetch(`${API}/admin/api/companies`, { headers: authHeaders() });
     const d = await r.json();
-    if (d.success) { companies = d.companies; renderCompanies(); }
-    else showToast(d.error, true);
-  } catch { showToast('Failed to load companies', true); }
+    if (d.success) { 
+      companies = d.companies || []; 
+      renderCompanies(); 
+    } else {
+      showToast(d.error, true);
+    }
+  } catch { 
+    showToast('Failed to load companies', true); 
+  }
 }
 
 function renderCompanies() {
   const body = document.getElementById('companiesBody');
-  document.getElementById('companyCount').textContent = `${companies.length} companies registered`;
-  if (!companies.length) {
+  const comps = Array.isArray(companies) ? companies : [];
+  document.getElementById('companyCount').textContent = `${comps.length} companies registered`;
+  if (!comps.length) {
     body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#64748B">No companies yet. Click "Add Company" to create one.</td></tr>';
     return;
   }
-  body.innerHTML = companies.map(c => `<tr>
+  body.innerHTML = comps.map(c => `<tr>
     <td><code style="background:#1E293B;padding:3px 8px;border-radius:4px;font-size:12px">${esc(c.id)}</code></td>
     <td class="td-name">${esc(c.name)}</td>
     <td>${esc(c.location || '-')}</td>
@@ -305,7 +312,8 @@ function openCompanyModal(data = null) {
   let defaultId = '';
   if (!data) {
     let maxNum = 0;
-    companies.forEach(c => {
+    const comps = Array.isArray(companies) ? companies : [];
+    comps.forEach(c => {
       const match = c.id.match(/^tc-(\d+)$/);
       if (match) {
         const num = parseInt(match[1], 10);

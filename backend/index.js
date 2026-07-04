@@ -495,35 +495,24 @@ const getPredefinedPrice = (rawGoodsType, weightKg, explicitDistance = null) => 
     };
   }
 
-  const basePrices = {
-    furniture: 500,
-    electronics: 800,
-    food: 300,
-    clothes: 250,
-    books: 200,
-    default: 400,
-  };
+  // ─── Distance-based pricing for heavy goods (>500 kg) ───
+  // Customer pays ₹50/km, driver receives ₹45/km (90%), platform keeps ₹5/km (10%)
+  const RATE_PER_KM = 50;
+  const DRIVER_RATE_PER_KM = 45;
+  const MIN_FARE = 500;         // minimum customer fare
+  const MIN_DRIVER_PAYOUT = 450; // minimum driver payout
 
-  const goodsLower = goodsType.toLowerCase();
-  let basePrice = basePrices['default'];
+  const total = Math.max(MIN_FARE, Math.round(distanceKm * RATE_PER_KM));
+  const driverCut = Math.max(MIN_DRIVER_PAYOUT, Math.round(distanceKm * DRIVER_RATE_PER_KM));
+  const serviceFee = total - driverCut; // platform commission (₹5/km = 10%)
 
-  for (const [key, price] of Object.entries(basePrices)) {
-    if (goodsLower.includes(key)) {
-      basePrice = price;
-      break;
-    }
-  }
-
-  const total = Math.round(basePrice + weightKg * 10);
-  const serviceFee = Math.round(total * 0.2); // 20% service fee
-  const estimatedFreight = total - serviceFee; // driver payout before cut
-  const driverCut = Math.round(estimatedFreight * 0.9); // driver receives 90% of freight, 10% platform
-  const rangeMin = Math.round(driverCut * 0.85);
-  const rangeMax = Math.round(driverCut * 1.15);
+  const estimatedFreight = driverCut;
+  const rangeMin = Math.round(driverCut * 0.9);
+  const rangeMax = Math.round(driverCut * 1.1);
 
   return {
     total,
-    base: basePrice,
+    base: RATE_PER_KM,
     serviceFee,
     estimatedFreight,
     driverCut,
@@ -1133,11 +1122,108 @@ const STATE_CITY_MAP = {
   'Jharkhand': ['Ranchi', 'Dhanbad', 'Jamshedpur', 'Tatanagar', 'Asansol', 'Chas', 'Giridih']
 };
 
+// ─── Levenshtein distance for fuzzy matching ───
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+function cleanForFuzzy(s) {
+  return s.toLowerCase().trim()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+function isFuzzyMatch(str1, str2) {
+  if (!str1 || !str2) return false;
+  const s1 = cleanForFuzzy(str1);
+  const s2 = cleanForFuzzy(str2);
+  if (s1 === s2) return true;
+  if (s1.includes(s2) || s2.includes(s1)) return true;
+  const maxLen = Math.max(s1.length, s2.length);
+  if (maxLen <= 3) return false;
+  const dist = levenshteinDistance(s1, s2);
+  const maxAllowed = maxLen <= 5 ? 1 : maxLen <= 10 ? 2 : 3;
+  return dist <= maxAllowed;
+}
+
+// ─── Static detailed routes (fallback when DB column missing) ───
+const DETAILED_ROUTES_V2 = {
+  'tc-001': [
+    { state: 'West Bengal', cities: [{ name: 'Kolkata' }], price_min: 4, price_max: 8, delivery_days_min: 5, delivery_days_max: 7 },
+  ],
+  'tc-002': [
+    { state: 'Maharashtra', cities: [{ name: 'Mumbai' }, { name: 'Pune' }, { name: 'Nagpur' }], price_min: 5, price_max: 7, delivery_days_min: 5, delivery_days_max: 6 },
+    { state: 'Karnataka', cities: [{ name: 'Bangalore' }, { name: 'Mysore' }, { name: 'Hubli' }], price_min: 5, price_max: 7, delivery_days_min: 5, delivery_days_max: 6 },
+  ],
+  'tc-003': [
+    {
+      state: 'Punjab',
+      cities: [
+        { name: 'Amritsar', price_min: 2, price_max: 3, delivery_days_min: 1, delivery_days_max: 2 },
+        { name: 'Ajnala' }, { name: 'Batala' }, { name: 'Gurdaspur' },
+        { name: 'Pathankot', price_min: 2, price_max: 3 },
+        { name: 'Hoshiarpur' }, { name: 'Jalandhar', price_min: 2, price_max: 3, delivery_days_min: 1, delivery_days_max: 1 },
+        { name: 'Phagwara' }, { name: 'Nakodar' }, { name: 'Kapurthala' },
+        { name: 'Sultanpur Lodhi' }, { name: 'Nawanshahr' }, { name: 'Balachaur' },
+        { name: 'Ludhiana', price_min: 2, price_max: 2.5, delivery_days_min: 1, delivery_days_max: 1 },
+        { name: 'Doraha' }, { name: 'Khanna' }, { name: 'Samrala' },
+        { name: 'Mandi Gobindgarh' }, { name: 'Sirhind' }, { name: 'Rajpura' },
+        { name: 'Patiala', price_min: 2, price_max: 3 },
+        { name: 'Nabha' }, { name: 'Malerkotla' }, { name: 'Ahmedgarh' },
+        { name: 'Barnala' }, { name: 'Sangrur' }, { name: 'Sunam' },
+        { name: 'Lehragaga' }, { name: 'Dhuri' }, { name: 'Raikot' },
+        { name: 'Jagraon' }, { name: 'Moga' }, { name: 'Kotkapura' },
+        { name: 'Faridkot' }, { name: 'Ferozepur' }, { name: 'Fazilka' },
+        { name: 'Zira' }, { name: 'Jalalabad' }, { name: 'Muktsar' },
+        { name: 'Abohar' }, { name: 'Tarn Taran' }, { name: 'Patti' },
+        { name: 'Khemkaran' }, { name: 'Dasuya' }, { name: 'Mukerian' },
+      ],
+      price_min: 2, price_max: 4, delivery_days_min: 1, delivery_days_max: 2,
+    },
+    { state: 'Haryana', cities: [{ name: 'Ambala' }, { name: 'Ambala City' }, { name: 'Ambala Cantt' }, { name: 'Shahbad' }, { name: 'Kurukshetra' }, { name: 'Karnal' }, { name: 'Panipat' }, { name: 'Sonipat' }], price_min: 2, price_max: 4, delivery_days_min: 1, delivery_days_max: 2 },
+    { state: 'Jammu & Kashmir', cities: [{ name: 'Jammu' }, { name: 'Kathua' }, { name: 'Samba' }, { name: 'Dori Brahmana' }, { name: 'Vijaypur' }], price_min: 3, price_max: 4, delivery_days_min: 2, delivery_days_max: 3 },
+    { state: 'Delhi', cities: [{ name: 'Delhi', price_min: 2.5, price_max: 3.5, delivery_days_min: 1, delivery_days_max: 2 }], price_min: 2.5, price_max: 3.5, delivery_days_min: 1, delivery_days_max: 2 },
+    { state: 'Himachal Pradesh', cities: [{ name: 'Baddi' }, { name: 'Damtal' }], price_min: 3, price_max: 4, delivery_days_min: 2, delivery_days_max: 3 },
+  ],
+  'tc-004': [
+    { state: 'Assam', cities: [{ name: 'Guwahati' }, { name: 'Shillong' }, { name: 'Jorhat' }, { name: 'Dibrugarh' }, { name: 'Tinsukia' }, { name: 'Silchar' }, { name: 'Karimganj' }, { name: 'Agartala' }, { name: 'Lalabazar' }, { name: 'Aizawl' }, { name: 'Hailakandi' }, { name: 'Dharmanagar' }, { name: 'Imphal' }, { name: 'Dimapur' }, { name: 'Nagaon' }, { name: 'Lanka' }, { name: 'Gola Ghat' }, { name: 'Hojai' }], price_min: 2, price_max: 3, delivery_days_min: 10, delivery_days_max: 20 },
+    { state: 'Bihar', cities: [{ name: 'Patna Jn' }, { name: 'Patna City' }, { name: 'Gaya' }, { name: 'Siwan' }, { name: 'Chapra' }, { name: 'Muzaffarpur' }, { name: 'Darbhanga' }, { name: 'Sitamarhi' }, { name: 'Samastipur' }, { name: 'Raxaul' }, { name: 'Purnea' }, { name: 'Forbesganj' }, { name: 'Katihar' }, { name: 'Jogbani' }, { name: 'Bhagalpur' }, { name: 'Araria' }], price_min: 2, price_max: 3, delivery_days_min: 7, delivery_days_max: 14 },
+    { state: 'West Bengal', cities: [{ name: 'Kolkata' }, { name: 'Siliguri' }, { name: 'Darjeeling' }, { name: 'Cooch Behar' }, { name: 'Jaigaon' }, { name: 'Dinhata' }], price_min: 2, price_max: 3, delivery_days_min: 7, delivery_days_max: 12 },
+    { state: 'Odisha', cities: [{ name: 'Cuttack' }, { name: 'Bhubaneswar' }, { name: 'Puri' }, { name: 'Sambalpur' }, { name: 'Rourkela' }, { name: 'Berhampur' }, { name: 'Jharsuguda' }], price_min: 2, price_max: 3, delivery_days_min: 10, delivery_days_max: 15 },
+    { state: 'Jharkhand', cities: [{ name: 'Ranchi' }, { name: 'Dhanbad' }, { name: 'Jamshedpur' }, { name: 'Tatanagar' }, { name: 'Asansol' }, { name: 'Chas' }, { name: 'Giridih' }], price_min: 2, price_max: 3, delivery_days_min: 7, delivery_days_max: 12 },
+  ],
+};
+
 function cityToState(cityName) {
   if (!cityName) return null;
   const lowerCity = cityName.trim().toLowerCase();
   for (const [state, cities] of Object.entries(STATE_CITY_MAP)) {
     if (cities.some(c => c.toLowerCase() === lowerCity)) {
+      return state;
+    }
+  }
+  return null;
+}
+
+// Fuzzy version: also catches spelling mistakes
+function cityToStateFuzzy(cityName) {
+  if (!cityName) return null;
+  for (const [state, cities] of Object.entries(STATE_CITY_MAP)) {
+    if (cities.some(c => isFuzzyMatch(c, cityName))) {
       return state;
     }
   }
@@ -1203,12 +1289,12 @@ app.get('/gozo/transport-companies/destinations', async (req, res) => {
 app.get('/gozo/transport-companies/search', async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { destination } = req.query;
+    const { destination, pickup_city } = req.query;
     if (!destination) {
       return res.status(400).json({ success: false, error: 'Destination is required' });
     }
 
-    const destLower = destination.trim().toLowerCase();
+    const destTrimmed = destination.trim();
 
     const { data: rawCompanies, error } = await supabase
       .from('transport_companies')
@@ -1217,46 +1303,66 @@ app.get('/gozo/transport-companies/search', async (req, res) => {
 
     if (error) throw error;
 
+    // Resolve destination to state/city using fuzzy matching
+    const matchedStateName = Object.keys(STATE_CITY_MAP).find(s => isFuzzyMatch(s, destTrimmed));
+    let matchedCityName = null;
+    let resolvedStateName = null;
+    if (!matchedStateName) {
+      for (const [state, cities] of Object.entries(STATE_CITY_MAP)) {
+        const found = cities.find(c => isFuzzyMatch(c, destTrimmed));
+        if (found) {
+          matchedCityName = found;
+          resolvedStateName = state;
+          break;
+        }
+      }
+    }
+
     const results = [];
-    const isStateQuery = Object.keys(STATE_CITY_MAP).some(s => s.toLowerCase() === destLower);
-    const resolvedState = isStateQuery ? null : cityToState(destination);
 
     for (const c of rawCompanies) {
-      const routesV2 = c.routes_v2 || [];
+      // ── Filter by pickup_city if provided ──
+      if (pickup_city) {
+        const pickupLower = pickup_city.trim().toLowerCase();
+        const locWords = c.location.toLowerCase().split(/[\s,]+/).filter(Boolean);
+        const pickupWords = pickupLower.split(/[\s,]+/).filter(Boolean);
+        const pickupMatches = locWords.some(lw => pickupWords.some(pw => isFuzzyMatch(lw, pw)));
+        if (!pickupMatches) continue;
+      }
+
+      // ── Get routes: prefer DB column, fallback to static data ──
+      const routesV2 = (c.routes_v2 && c.routes_v2.length > 0) ? c.routes_v2 : (DETAILED_ROUTES_V2[c.id] || []);
       let matchType = null;
       let matchedRoute = null;
       let matchedCity = null;
 
-      if (isStateQuery) {
-        matchedRoute = routesV2.find(r => r.state.toLowerCase() === destLower);
+      if (matchedStateName) {
+        // User searched for a state name (e.g. "Jammu & Kashmir", "jammu and kasmir")
+        matchedRoute = routesV2.find(r => isFuzzyMatch(r.state, matchedStateName));
+        if (matchedRoute) matchType = 'state';
+      } else if (resolvedStateName && matchedCityName) {
+        // User searched for a city name (e.g. "Jammu", "Kolkata")
+        matchedRoute = routesV2.find(r => isFuzzyMatch(r.state, resolvedStateName));
         if (matchedRoute) {
-          matchType = 'state';
-        }
-      } else if (resolvedState) {
-        matchedRoute = routesV2.find(r => r.state.toLowerCase() === resolvedState.toLowerCase());
-        if (matchedRoute) {
-          matchedCity = matchedRoute.cities?.find(ct => ct.name.toLowerCase() === destLower);
-          if (matchedCity) {
-            matchType = 'city';
-          } else {
-            matchType = 'state';
-          }
+          matchedCity = matchedRoute.cities?.find(ct => isFuzzyMatch(ct.name, matchedCityName));
+          matchType = matchedCity ? 'city' : 'state';
         }
       } else {
-        // Fallback fuzzy substring
-        matchedRoute = routesV2.find(r => {
-          if (r.state.toLowerCase().includes(destLower)) {
+        // Freeform search — fuzzy match against all routes and cities
+        for (const r of routesV2) {
+          if (isFuzzyMatch(r.state, destTrimmed)) {
+            matchedRoute = r;
             matchType = 'state';
-            return true;
+            break;
           }
-          const cityMatch = r.cities?.find(ct => ct.name.toLowerCase().includes(destLower));
-          if (cityMatch) {
-            matchedCity = cityMatch;
+          const cityHit = r.cities?.find(ct => isFuzzyMatch(ct.name, destTrimmed));
+          if (cityHit) {
+            matchedRoute = r;
+            matchedCity = cityHit;
             matchType = 'city';
-            return true;
+            break;
           }
-          return false;
-        });
+        }
       }
 
       if (matchType) {
@@ -1268,18 +1374,30 @@ app.get('/gozo/transport-companies/search', async (req, res) => {
                           : (matchedRoute && matchedRoute.price_max != null) ? matchedRoute.price_max
                           : Number(c.rate_per_kg) || 0;
 
+        let parsed_min = 1;
+        let parsed_max = 7;
+        if (c.delivery_time) {
+          const matches = c.delivery_time.match(/\d+/g);
+          if (matches && matches.length > 0) {
+            const vals = matches.map(v => parseInt(v, 10));
+            parsed_min = Math.min(...vals);
+            parsed_max = Math.max(...vals);
+          }
+        }
+
         const delivery_days_min = (matchedCity && matchedCity.delivery_days_min != null) ? matchedCity.delivery_days_min
                                   : (matchedRoute && matchedRoute.delivery_days_min != null) ? matchedRoute.delivery_days_min
-                                  : parseInt(c.delivery_time) || 1;
+                                  : parsed_min;
 
         const delivery_days_max = (matchedCity && matchedCity.delivery_days_max != null) ? matchedCity.delivery_days_max
                                   : (matchedRoute && matchedRoute.delivery_days_max != null) ? matchedRoute.delivery_days_max
-                                  : parseInt(c.delivery_time) || 7;
+                                  : parsed_max;
 
         results.push({
           id: c.id,
           name: c.name,
           location: c.location,
+          ratePerKg: Number(c.rate_per_kg) || 0,
           rating: Number(c.rating) || 0,
           totalRatings: c.total_ratings || 0,
           depotAddress: c.depot_address || '',
@@ -1288,6 +1406,7 @@ app.get('/gozo/transport-companies/search', async (req, res) => {
           contactPhone: c.contact_phone || '',
           experience: c.experience || '',
           additionalInfo: c.additional_info || '',
+          deliveryTime: c.delivery_time || '',
           routes: c.routes || [],
           routes_v2: routesV2,
           images: c.images || [],
@@ -1300,6 +1419,7 @@ app.get('/gozo/transport-companies/search', async (req, res) => {
       }
     }
 
+    // Sort: exact city matches first, then state matches, then alphabetical
     results.sort((a, b) => {
       if (a.matchType === b.matchType) {
         return a.name.localeCompare(b.name);
