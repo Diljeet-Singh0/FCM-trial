@@ -5,6 +5,7 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const { createClient } = require('@supabase/supabase-js');
 const twilio = require('twilio');
+const cron = require('node-cron');
 
 const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
 const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
@@ -1069,10 +1070,14 @@ app.get('/gozo/active-requests', async (req, res) => {
 app.get('/gozo/transport-companies', async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { data, error } = await supabase
-      .from('transport_companies')
-      .select('*')
-      .order('created_at', { ascending: true });
+    const { owner_id } = req.query;
+    let dbQuery = supabase.from('transport_companies').select('*');
+    if (owner_id) {
+      dbQuery = dbQuery.or(`owner_id.is.null,owner_id.eq.${owner_id}`);
+    } else {
+      dbQuery = dbQuery.is('owner_id', null);
+    }
+    const { data, error } = await dbQuery.order('created_at', { ascending: true });
     if (error) throw error;
     // Map DB snake_case to camelCase for app compatibility
     const companies = (data || []).map(c => ({
@@ -1289,17 +1294,20 @@ app.get('/gozo/transport-companies/destinations', async (req, res) => {
 app.get('/gozo/transport-companies/search', async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { destination, pickup_city } = req.query;
+    const { destination, pickup_city, owner_id } = req.query;
     if (!destination) {
       return res.status(400).json({ success: false, error: 'Destination is required' });
     }
 
     const destTrimmed = destination.trim();
 
-    const { data: rawCompanies, error } = await supabase
-      .from('transport_companies')
-      .select('*')
-      .order('created_at', { ascending: true });
+    let dbQuery = supabase.from('transport_companies').select('*');
+    if (owner_id) {
+      dbQuery = dbQuery.or(`owner_id.is.null,owner_id.eq.${owner_id}`);
+    } else {
+      dbQuery = dbQuery.is('owner_id', null);
+    }
+    const { data: rawCompanies, error } = await dbQuery.order('created_at', { ascending: true });
 
     if (error) throw error;
 
@@ -1430,6 +1438,85 @@ app.get('/gozo/transport-companies/search', async (req, res) => {
     res.json({ success: true, companies: results });
   } catch (error) {
     console.error('[GoZo] Search error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Add Custom/Private Transport Company ───
+app.post('/gozo/transport-companies/custom', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { owner_id, name, depot_address, contact_phone, destination, delivery_time, rate_per_kg } = req.body;
+    if (!owner_id || !name) {
+      return res.status(400).json({ success: false, error: 'Owner ID and Name are required' });
+    }
+
+    const id = 'custom-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+    let routes = [];
+    let routes_v2 = [];
+    let location = '';
+
+    if (destination) {
+      const destTrimmed = destination.trim();
+      routes = [destTrimmed];
+      
+      const matchedStateName = Object.keys(STATE_CITY_MAP).find(s => isFuzzyMatch(s, destTrimmed));
+      let matchedCityName = null;
+      let resolvedStateName = null;
+      if (!matchedStateName) {
+        for (const [state, cities] of Object.entries(STATE_CITY_MAP)) {
+          const found = cities.find(c => isFuzzyMatch(c, destTrimmed));
+          if (found) {
+            matchedCityName = found;
+            resolvedStateName = state;
+            break;
+          }
+        }
+      }
+
+      if (matchedStateName) {
+        routes_v2 = [{ state: matchedStateName, cities: [], price_min: rate_per_kg || 0, price_max: rate_per_kg || 0 }];
+        location = matchedStateName;
+      } else if (resolvedStateName && matchedCityName) {
+        routes_v2 = [{
+          state: resolvedStateName,
+          cities: [{ name: matchedCityName, price_min: rate_per_kg || 0, price_max: rate_per_kg || 0 }],
+          price_min: rate_per_kg || 0,
+          price_max: rate_per_kg || 0
+        }];
+        location = `${resolvedStateName} (${matchedCityName})`;
+      } else {
+        routes_v2 = [{ state: destTrimmed, cities: [{ name: destTrimmed }], price_min: rate_per_kg || 0, price_max: rate_per_kg || 0 }];
+        location = destTrimmed;
+      }
+    }
+
+    const newCompany = {
+      id,
+      name,
+      location: location || 'Custom Location',
+      rate_per_kg: rate_per_kg || 0,
+      rate_display: rate_per_kg ? `${rate_per_kg}` : '',
+      rating: 5.0,
+      total_ratings: 1,
+      routes,
+      routes_v2,
+      depot_address: depot_address || '',
+      description: 'Self-added custom transporter',
+      established: new Date().getFullYear().toString(),
+      contact_phone: contact_phone || '',
+      experience: '1',
+      delivery_time: delivery_time || '2-5 days',
+      additional_info: 'Custom user-added transporter',
+      owner_id
+    };
+
+    const { error } = await supabase.from('transport_companies').insert(newCompany);
+    if (error) throw error;
+
+    res.json({ success: true, company: newCompany });
+  } catch (error) {
+    console.error('[GoZo] Create custom company error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2212,7 +2299,7 @@ app.delete('/admin/api/companies/:id', requireAdmin, async (req, res) => {
 app.get('/admin/api/drivers', requireAdmin, async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { data, error } = await supabase.from('users').select('id, name, phone, created_at').eq('role', 'transporter').order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('users').select('id, name, phone, vehicle_number, created_at').eq('role', 'transporter').order('created_at', { ascending: false });
     if (error) throw error;
     res.json({ success: true, drivers: data || [] });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
@@ -2248,6 +2335,525 @@ app.delete('/admin/api/drivers/:id', requireAdmin, async (req, res) => {
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
+
+// ═══════════════════════════════════════════════════════════════
+// ─── Scheduled Rides Feature ─────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+
+// Helper: generate SCH-YYYYMMDD-XXXXXX booking ID
+const generateScheduledBookingId = () => {
+  const now = new Date();
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const ist = new Date(now.getTime() + istOffset);
+  const y = ist.getUTCFullYear();
+  const m = String(ist.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(ist.getUTCDate()).padStart(2, '0');
+  const dateStr = `${y}${m}${d}`;
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return `SCH-${dateStr}-${code}`;
+};
+
+// Helper: send FCM for scheduled ride events
+const sendScheduledRideFCM = async (userId, title, body, dataPayload) => {
+  if (!admin.apps.length) return;
+  // Try in-memory token first, then DB
+  let token = tokenStore[userId];
+  if (!token && supabase) {
+    const { data: userRow } = await supabase.from('users').select('fcm_token').eq('id', userId).maybeSingle();
+    token = userRow?.fcm_token;
+  }
+  if (!token) {
+    console.warn(`[ScheduledRide FCM] No token for user ${userId}`);
+    return;
+  }
+  try {
+    await admin.messaging().send({
+      token,
+      notification: { title, body },
+      data: dataPayload,
+      android: { priority: 'high' }
+    });
+    console.log(`[ScheduledRide FCM] Sent "${dataPayload.type}" to ${userId}`);
+  } catch (err) {
+    console.error(`[ScheduledRide FCM] Failed for ${userId}:`, err.message);
+  }
+};
+
+// POST /scheduled-rides — Create a new scheduled ride
+app.post('/scheduled-rides', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { user_id, pickup_location, pickup_lat, pickup_lng, drop_location, drop_lat, drop_lng, goods_description, scheduled_time } = req.body;
+
+    if (!user_id || !pickup_location || !drop_location || !scheduled_time) {
+      return res.status(400).json({ success: false, error: 'Missing required fields: user_id, pickup_location, drop_location, scheduled_time' });
+    }
+
+    const schedDate = new Date(scheduled_time);
+    const now = new Date();
+    const twoHoursFromNow = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+    const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    if (isNaN(schedDate.getTime())) {
+      return res.status(400).json({ success: false, error: 'Invalid scheduled_time format' });
+    }
+    if (schedDate < twoHoursFromNow) {
+      return res.status(400).json({ success: false, error: 'Scheduled time must be at least 2 hours from now' });
+    }
+    if (schedDate > sevenDaysFromNow) {
+      return res.status(400).json({ success: false, error: 'Scheduled time must be within 7 days from now' });
+    }
+
+    const bookingId = generateScheduledBookingId();
+
+    const { data: ride, error } = await supabase
+      .from('scheduled_rides')
+      .insert({
+        booking_id: bookingId,
+        user_id,
+        pickup_location,
+        pickup_lat: pickup_lat || null,
+        pickup_lng: pickup_lng || null,
+        drop_location,
+        drop_lat: drop_lat || null,
+        drop_lng: drop_lng || null,
+        goods_description: goods_description || null,
+        scheduled_time: schedDate.toISOString(),
+        status: 'pending'
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Send confirmation FCM to user
+    await sendScheduledRideFCM(user_id,
+      '📅 Ride Scheduled!',
+      `Your ride (${bookingId}) has been scheduled. We will assign a driver soon.`,
+      { type: 'scheduled_ride_confirmed', rideId: ride.id, bookingId }
+    );
+
+    console.log(`[ScheduledRide] Created ${bookingId} for user ${user_id}`);
+    res.json({ success: true, ride });
+  } catch (error) {
+    console.error('[ScheduledRide] create error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /scheduled-rides/user/:userId — User's scheduled rides
+app.get('/scheduled-rides/user/:userId', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { userId } = req.params;
+    const { data, error } = await supabase
+      .from('scheduled_rides')
+      .select('*')
+      .eq('user_id', userId)
+      .order('scheduled_time', { ascending: true });
+    if (error) throw error;
+    res.json({ success: true, rides: data || [] });
+  } catch (error) {
+    console.error('[ScheduledRide] user rides error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /scheduled-rides/driver/:driverId — Driver's assigned rides
+app.get('/scheduled-rides/driver/:driverId', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { driverId } = req.params;
+    const { data, error } = await supabase
+      .from('scheduled_rides')
+      .select('*')
+      .eq('driver_id', driverId)
+      .eq('status', 'assigned')
+      .order('scheduled_time', { ascending: true });
+    if (error) throw error;
+    res.json({ success: true, rides: data || [] });
+  } catch (error) {
+    console.error('[ScheduledRide] driver rides error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /scheduled-rides/:rideId — Single ride detail
+app.get('/scheduled-rides/:rideId', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { rideId } = req.params;
+    const { data: ride, error } = await supabase
+      .from('scheduled_rides')
+      .select('*')
+      .eq('id', rideId)
+      .single();
+    if (error) throw error;
+
+    // Enrich with user info
+    let userInfo = null;
+    if (ride.user_id) {
+      const { data: u } = await supabase.from('users').select('id, name, phone, factory_name, factory_address').eq('id', ride.user_id).maybeSingle();
+      userInfo = u;
+    }
+
+    // Enrich with driver info
+    let driverInfo = null;
+    if (ride.driver_id) {
+      const { data: d } = await supabase.from('users').select('id, name, phone, vehicle_number').eq('id', ride.driver_id).maybeSingle();
+      driverInfo = d;
+    }
+
+    res.json({ success: true, ride: { ...ride, user: userInfo, driver: driverInfo } });
+  } catch (error) {
+    console.error('[ScheduledRide] detail error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PATCH /scheduled-rides/:rideId/cancel — Cancel a scheduled ride
+app.patch('/scheduled-rides/:rideId/cancel', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { rideId } = req.params;
+    const { cancelled_by, cancellation_reason } = req.body;
+
+    if (!cancelled_by || !['user', 'driver', 'admin'].includes(cancelled_by)) {
+      return res.status(400).json({ success: false, error: 'cancelled_by must be user, driver, or admin' });
+    }
+
+    const { data: ride, error: lookupError } = await supabase
+      .from('scheduled_rides')
+      .select('*')
+      .eq('id', rideId)
+      .single();
+    if (lookupError) throw lookupError;
+
+    // Validation
+    if (ride.status === 'delivered') {
+      return res.status(400).json({ success: false, error: 'Cannot cancel a delivered ride' });
+    }
+    if (ride.status === 'cancelled') {
+      return res.status(400).json({ success: false, error: 'Ride is already cancelled' });
+    }
+
+    if (cancelled_by === 'driver') {
+      const hoursUntil = (new Date(ride.scheduled_time).getTime() - Date.now()) / (1000 * 60 * 60);
+      if (hoursUntil < 4) {
+        return res.status(400).json({ success: false, error: 'Cannot cancel within 4 hours of scheduled time' });
+      }
+    }
+
+    if (cancelled_by === 'user') {
+      const activeStatuses = ['on_the_way', 'arrived', 'picked_up', 'delivered'];
+      if (activeStatuses.includes(ride.status)) {
+        return res.status(400).json({ success: false, error: 'Cannot cancel — ride is already in progress' });
+      }
+    }
+
+    // Perform cancellation
+    const { data: updated, error: updateError } = await supabase
+      .from('scheduled_rides')
+      .update({
+        status: 'cancelled',
+        cancelled_by,
+        cancellation_reason: cancellation_reason || null,
+        cancelled_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', rideId)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+
+    // Send FCM notifications
+    if (cancelled_by === 'driver' || cancelled_by === 'admin') {
+      await sendScheduledRideFCM(ride.user_id,
+        '❌ Scheduled Ride Cancelled',
+        `Your scheduled ride (${ride.booking_id}) has been cancelled.`,
+        { type: 'scheduled_ride_cancelled', rideId: ride.id, bookingId: ride.booking_id }
+      );
+    }
+    if ((cancelled_by === 'user' || cancelled_by === 'admin') && ride.driver_id) {
+      await sendScheduledRideFCM(ride.driver_id,
+        '❌ Scheduled Ride Cancelled',
+        `Scheduled ride (${ride.booking_id}) has been cancelled.`,
+        { type: 'scheduled_ride_cancelled', rideId: ride.id, bookingId: ride.booking_id }
+      );
+    }
+
+    console.log(`[ScheduledRide] Cancelled ${ride.booking_id} by ${cancelled_by}`);
+    res.json({ success: true, ride: updated });
+  } catch (error) {
+    console.error('[ScheduledRide] cancel error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PATCH /scheduled-rides/:rideId/start — Driver starts the ride
+app.patch('/scheduled-rides/:rideId/start', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { rideId } = req.params;
+    const { driver_id } = req.body;
+
+    const { data: ride, error: lookupError } = await supabase
+      .from('scheduled_rides')
+      .select('*')
+      .eq('id', rideId)
+      .single();
+    if (lookupError) throw lookupError;
+
+    if (ride.status !== 'assigned') {
+      return res.status(400).json({ success: false, error: 'Ride must be in assigned status to start' });
+    }
+    if (ride.driver_id !== driver_id) {
+      return res.status(403).json({ success: false, error: 'This ride is not assigned to you' });
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from('scheduled_rides')
+      .update({
+        status: 'on_the_way',
+        started_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', rideId)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+
+    // Notify user
+    await sendScheduledRideFCM(ride.user_id,
+      '🚛 Your driver is on the way!',
+      `Driver has started the ride for ${ride.booking_id}.`,
+      { type: 'scheduled_ride_started', rideId: ride.id, bookingId: ride.booking_id }
+    );
+
+    console.log(`[ScheduledRide] Started ${ride.booking_id}`);
+    res.json({ success: true, ride: updated });
+  } catch (error) {
+    console.error('[ScheduledRide] start error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PATCH /scheduled-rides/:rideId/status — Post-start status updates (arrived, picked_up, delivered)
+const VALID_SCHEDULED_STATUSES = ['arrived', 'picked_up', 'delivered'];
+
+app.patch('/scheduled-rides/:rideId/status', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { rideId } = req.params;
+    const { driver_id, status } = req.body;
+
+    if (!status || !VALID_SCHEDULED_STATUSES.includes(status)) {
+      return res.status(400).json({ success: false, error: `Invalid status. Must be one of: ${VALID_SCHEDULED_STATUSES.join(', ')}` });
+    }
+
+    const { data: ride, error: lookupError } = await supabase
+      .from('scheduled_rides')
+      .select('*')
+      .eq('id', rideId)
+      .single();
+    if (lookupError) throw lookupError;
+
+    if (ride.driver_id !== driver_id) {
+      return res.status(403).json({ success: false, error: 'This ride is not assigned to you' });
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from('scheduled_rides')
+      .update({
+        status,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', rideId)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+
+    // Notify user of status change
+    const statusMessages = {
+      arrived: { title: '📍 Driver Arrived', body: 'Your driver has arrived at the pickup location.' },
+      picked_up: { title: '📦 Goods Picked Up', body: 'Your goods have been picked up!' },
+      delivered: { title: '✅ Delivery Completed', body: 'Your goods have been delivered successfully!' },
+    };
+    const notif = statusMessages[status];
+    if (notif) {
+      await sendScheduledRideFCM(ride.user_id, notif.title, notif.body,
+        { type: 'scheduled_ride_status_update', rideId: ride.id, bookingId: ride.booking_id, status }
+      );
+    }
+
+    console.log(`[ScheduledRide] Status update ${ride.booking_id} → ${status}`);
+    res.json({ success: true, ride: updated });
+  } catch (error) {
+    console.error('[ScheduledRide] status update error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /admin/scheduled-rides — Admin list with optional filters
+app.get('/admin/scheduled-rides', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { status, date } = req.query;
+
+    let query = supabase.from('scheduled_rides').select('*').order('scheduled_time', { ascending: true });
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+    if (date) {
+      // Filter by date (YYYY-MM-DD)
+      const dayStart = new Date(date + 'T00:00:00Z').toISOString();
+      const dayEnd = new Date(date + 'T23:59:59Z').toISOString();
+      query = query.gte('scheduled_time', dayStart).lte('scheduled_time', dayEnd);
+    }
+
+    const { data: rides, error } = await query;
+    if (error) throw error;
+
+    // Enrich with user and driver info
+    const enriched = await Promise.all((rides || []).map(async (ride) => {
+      let userInfo = null;
+      let driverInfo = null;
+      if (ride.user_id) {
+        const { data: u } = await supabase.from('users').select('id, name, phone, factory_name').eq('id', ride.user_id).maybeSingle();
+        userInfo = u;
+      }
+      if (ride.driver_id) {
+        const { data: d } = await supabase.from('users').select('id, name, phone, vehicle_number').eq('id', ride.driver_id).maybeSingle();
+        driverInfo = d;
+      }
+      return { ...ride, user: userInfo, driver: driverInfo };
+    }));
+
+    res.json({ success: true, rides: enriched });
+  } catch (error) {
+    console.error('[ScheduledRide] admin list error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PATCH /admin/scheduled-rides/:rideId/assign — Admin assigns a driver
+app.patch('/admin/scheduled-rides/:rideId/assign', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { rideId } = req.params;
+    const { driver_id } = req.body;
+
+    if (!driver_id) {
+      return res.status(400).json({ success: false, error: 'driver_id is required' });
+    }
+
+    // Verify ride is pending
+    const { data: ride, error: lookupError } = await supabase
+      .from('scheduled_rides')
+      .select('*')
+      .eq('id', rideId)
+      .single();
+    if (lookupError) throw lookupError;
+
+    if (ride.status !== 'pending') {
+      return res.status(400).json({ success: false, error: 'Can only assign driver to pending rides' });
+    }
+
+    // Verify driver exists and is a transporter
+    const { data: driverRow, error: driverError } = await supabase
+      .from('users')
+      .select('id, name, phone, vehicle_number')
+      .eq('id', driver_id)
+      .eq('role', 'transporter')
+      .single();
+    if (driverError || !driverRow) {
+      return res.status(400).json({ success: false, error: 'Driver not found or not active' });
+    }
+
+    // Assign
+    const { data: updated, error: updateError } = await supabase
+      .from('scheduled_rides')
+      .update({
+        driver_id,
+        status: 'assigned',
+        assigned_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', rideId)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+
+    // Format scheduled time for notification
+    const schedDate = new Date(ride.scheduled_time);
+    const dateStr = schedDate.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+    const timeStr = schedDate.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+
+    // Notify driver
+    await sendScheduledRideFCM(driver_id,
+      '📅 Scheduled Ride Assigned',
+      `You have been assigned a scheduled ride on ${dateStr} at ${timeStr}. Tap to view details.`,
+      { type: 'scheduled_ride_assigned', rideId: ride.id, bookingId: ride.booking_id }
+    );
+
+    // Notify user
+    await sendScheduledRideFCM(ride.user_id,
+      '✅ Driver Assigned!',
+      `Your scheduled ride (${ride.booking_id}) has been confirmed. A driver has been assigned.`,
+      { type: 'scheduled_ride_assigned', rideId: ride.id, bookingId: ride.booking_id }
+    );
+
+    console.log(`[ScheduledRide] Assigned driver ${driverRow.name} to ${ride.booking_id}`);
+    res.json({ success: true, ride: { ...updated, driver: driverRow } });
+  } catch (error) {
+    console.error('[ScheduledRide] assign error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Background Cron Job: Unassigned Ride Alerts (every 15 min) ───
+cron.schedule('*/15 * * * *', async () => {
+  if (!supabase) return;
+  try {
+    const twoHoursFromNow = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    const { data: unassigned, error } = await supabase
+      .from('scheduled_rides')
+      .select('*')
+      .eq('status', 'pending')
+      .eq('unassigned_alert_sent', false)
+      .lte('scheduled_time', twoHoursFromNow);
+
+    if (error) {
+      console.error('[Cron] Unassigned alert query error:', error.message);
+      return;
+    }
+
+    for (const ride of (unassigned || [])) {
+      const schedDate = new Date(ride.scheduled_time);
+      const timeStr = schedDate.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+
+      await sendScheduledRideFCM(ride.user_id,
+        '⚠️ Ride Not Yet Assigned',
+        `Your scheduled ride at ${timeStr} has not been assigned a driver yet. We are working on it.`,
+        { type: 'scheduled_ride_unassigned_alert', rideId: ride.id, bookingId: ride.booking_id }
+      );
+
+      await supabase.from('scheduled_rides')
+        .update({ unassigned_alert_sent: true })
+        .eq('id', ride.id);
+
+      console.log(`[Cron] Sent unassigned alert for ${ride.booking_id}`);
+    }
+  } catch (err) {
+    console.error('[Cron] Unassigned alert job error:', err.message);
+  }
+});
+console.log('[Cron] Unassigned ride alert job scheduled (every 15 min)');
 
 app.get('/health', (req, res) => {
   res.json({

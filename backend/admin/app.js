@@ -17,7 +17,7 @@ async function handleLogin() {
       sessionStorage.setItem('adminToken', authToken);
       document.getElementById('loginScreen').classList.add('hidden');
       document.getElementById('dashboard').classList.remove('hidden');
-      loadCompanies(); loadDrivers();
+      loadCompanies(); loadDrivers(); loadScheduledRides();
     } else {
       document.getElementById('loginError').textContent = d.error || 'Invalid PIN';
     }
@@ -51,6 +51,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         const d = await r.json();
         if (d.success) { companies = d.companies; renderCompanies(); }
         loadDrivers();
+        loadScheduledRides();
       }
     } catch {
       authToken = '';
@@ -68,6 +69,9 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
   document.getElementById(`${tab}Tab`).classList.add('active');
+  if (tab === 'scheduled') {
+    loadScheduledRides();
+  }
 }
 
 // ── Toast ──
@@ -486,3 +490,168 @@ async function deleteDriver(id) {
 
 // ── Util ──
 function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+// ── Scheduled Rides ──
+let scheduledRides = [];
+
+async function loadScheduledRides() {
+  try {
+    const statusFilter = document.getElementById('filterStatus').value;
+    let url = `${API}/admin/scheduled-rides`;
+    if (statusFilter) {
+      url += `?status=${statusFilter}`;
+    }
+    const r = await fetch(url, { headers: authHeaders() });
+    const d = await r.json();
+    if (d.success) {
+      scheduledRides = d.rides || [];
+      renderScheduledRides();
+    } else {
+      showToast(d.error, true);
+    }
+  } catch (err) {
+    showToast('Failed to load scheduled rides', true);
+  }
+}
+
+function renderScheduledRides() {
+  const body = document.getElementById('scheduledBody');
+  document.getElementById('scheduledCount').textContent = `${scheduledRides.length} scheduled rides`;
+  if (!scheduledRides.length) {
+    body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#64748B">No scheduled rides found.</td></tr>';
+    return;
+  }
+  
+  body.innerHTML = scheduledRides.map(r => {
+    const isPending = r.status === 'pending';
+    const isCancelled = r.status === 'cancelled';
+    const hasDriver = !!r.driver;
+    
+    // Format Date/Time
+    const schedDate = new Date(r.scheduled_time);
+    const dateStr = schedDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    const timeStr = schedDate.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    
+    const driverText = hasDriver 
+      ? `<strong>${esc(r.driver.name)}</strong><br><span style="font-size: 11px; color: #64748B;">${esc(r.driver.phone)}</span>`
+      : '<span style="color: #EF4444; font-weight: 600;">Unassigned</span>';
+      
+    const statusColors = {
+      pending: '#EF4444',
+      assigned: '#1A56DB',
+      on_the_way: '#F59E0B',
+      arrived: '#7C3AED',
+      picked_up: '#0369A1',
+      delivered: '#059669',
+      cancelled: '#64748B'
+    };
+    const statusBg = {
+      pending: '#FEE2E2',
+      assigned: '#EFF6FF',
+      on_the_way: '#FEF3C7',
+      arrived: '#EDE9FE',
+      picked_up: '#E0F2FE',
+      delivered: '#D1FAE5',
+      cancelled: '#F1F5F9'
+    };
+    const color = statusColors[r.status] || '#64748B';
+    const bg = statusBg[r.status] || '#F1F5F9';
+    
+    const statusBadge = `<span style="background: ${bg}; color: ${color}; padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 12px; text-transform: uppercase;">${esc(r.status)}</span>`;
+    
+    let actionBtn = '';
+    if (isPending) {
+      actionBtn = `<button class="action-btn edit-btn" style="background: #10B981; color: white;" onclick="openAssignModal('${r.id}')">Assign Driver</button>`;
+    } else if (!isCancelled && r.status !== 'delivered') {
+      actionBtn = `<button class="action-btn del-btn" onclick="cancelScheduledRide('${r.id}')">Cancel</button>`;
+    } else {
+      actionBtn = '<span style="color: #94A3B8;">-</span>';
+    }
+    
+    return `<tr>
+      <td><code style="background:#1E293B;padding:3px 8px;border-radius:4px;font-size:12px">${esc(r.booking_id)}</code></td>
+      <td><strong>${esc(r.user ? r.user.name : 'Unknown')}</strong><br><span style="font-size:11px;color:#64748B">${esc(r.user ? r.user.phone : '')}</span></td>
+      <td style="font-size:13px;">
+        <span style="color:#10B981;font-weight:600;">Pickup:</span> ${esc(r.pickup_location)}<br>
+        <span style="color:#EF4444;font-weight:600;">Drop:</span> ${esc(r.drop_location)}
+      </td>
+      <td><strong>${esc(dateStr)}</strong><br>${esc(timeStr)}</td>
+      <td>${statusBadge}</td>
+      <td>${driverText}</td>
+      <td>${actionBtn}</td>
+    </tr>`;
+  }).join('');
+}
+
+function openAssignModal(rideId) {
+  document.getElementById('assignRideId').value = rideId;
+  const select = document.getElementById('assignDriverSelect');
+  
+  if (!drivers.length) {
+    select.innerHTML = '<option value="">No registered drivers available</option>';
+  } else {
+    select.innerHTML = drivers.map(d => `<option value="${d.id}">${esc(d.name)} (${esc(d.phone)})</option>`).join('');
+  }
+  
+  document.getElementById('assignModal').classList.remove('hidden');
+}
+
+function closeAssignModal() {
+  document.getElementById('assignModal').classList.add('hidden');
+  document.getElementById('assignForm').reset();
+}
+
+async function handleAssignSubmit(e) {
+  e.preventDefault();
+  const rideId = document.getElementById('assignRideId').value;
+  const driverId = document.getElementById('assignDriverSelect').value;
+  
+  if (!driverId) {
+    showToast('Please select a driver', true);
+    return;
+  }
+  
+  try {
+    const r = await fetch(`${API}/admin/scheduled-rides/${rideId}/assign`, {
+      method: 'PATCH',
+      headers: authHeaders(),
+      body: JSON.stringify({ driver_id: driverId })
+    });
+    const d = await r.json();
+    if (d.success) {
+      showToast('Driver assigned successfully!');
+      closeAssignModal();
+      loadScheduledRides();
+    } else {
+      showToast(d.error, true);
+    }
+  } catch (err) {
+    showToast('Failed to assign driver', true);
+  }
+}
+
+async function cancelScheduledRide(rideId) {
+  if (!confirm('Are you sure you want to cancel this scheduled ride?')) return;
+  try {
+    const r = await fetch(`${API}/scheduled-rides/${rideId}/cancel`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cancelled_by: 'admin', reason: 'Cancelled by administrator' })
+    });
+    const d = await r.json();
+    if (d.success) {
+      showToast('Scheduled ride cancelled');
+      loadScheduledRides();
+    } else {
+      showToast(d.error, true);
+    }
+  } catch (err) {
+    showToast('Failed to cancel ride', true);
+  }
+}
+
+window.openAssignModal = openAssignModal;
+window.closeAssignModal = closeAssignModal;
+window.handleAssignSubmit = handleAssignSubmit;
+window.cancelScheduledRide = cancelScheduledRide;
+window.loadScheduledRides = loadScheduledRides;

@@ -39,6 +39,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="companies" onclick="switchTab('companies')">🏢 Transport Companies</button>
       <button class="tab" data-tab="drivers" onclick="switchTab('drivers')">🚛 Drivers</button>
+      <button class="tab" data-tab="scheduled" onclick="switchTab('scheduled')">📅 Scheduled Rides</button>
     </div>
 
     <!-- Companies Tab -->
@@ -80,6 +81,39 @@
             </tr>
           </thead>
           <tbody id="driversBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Scheduled Rides Tab -->
+    <div id="scheduledTab" class="tab-content">
+      <div class="tab-header">
+        <div>
+          <h2 class="tab-title">Scheduled Rides</h2>
+          <p class="tab-subtitle" id="scheduledCount">Loading...</p>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <select id="filterStatus" class="login-input" style="width: auto; padding: 6px 12px; margin-bottom: 0;" onchange="loadScheduledRides()">
+            <option value="">All Statuses</option>
+            <option value="pending">Pending Assignment</option>
+            <option value="assigned">Assigned</option>
+            <option value="on_the_way">En Route</option>
+            <option value="arrived">At Pickup</option>
+            <option value="picked_up">Picked Up</option>
+            <option value="delivered">Delivered</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+          <button class="add-btn" onclick="loadScheduledRides()">🔄 Refresh</button>
+        </div>
+      </div>
+      <div class="table-wrapper">
+        <table class="data-table" id="scheduledTable">
+          <thead>
+            <tr>
+              <th>Booking ID</th><th>User</th><th>Pickup / Drop</th><th>Scheduled Time</th><th>Status</th><th>Assigned Driver</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="scheduledBody"></tbody>
         </table>
       </div>
     </div>
@@ -184,6 +218,29 @@
         <div class="modal-actions">
           <button type="button" class="cancel-btn" onclick="closeDriverModal()">Cancel</button>
           <button type="submit" class="submit-btn">Register Driver</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Assign Driver Modal -->
+  <div id="assignModal" class="modal-overlay hidden">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3>Assign Driver</h3>
+        <button class="modal-close" onclick="closeAssignModal()">&times;</button>
+      </div>
+      <form id="assignForm" onsubmit="handleAssignSubmit(event)">
+        <input type="hidden" id="assignRideId">
+        <div class="form-group">
+          <label>Select Driver (Transporter)</label>
+          <select id="assignDriverSelect" required style="width:100%; padding:10px; border-radius:6px; border:1px solid #CBD5E1; background:white;">
+            <!-- Options will be populated dynamically -->
+          </select>
+        </div>
+        <div class="modal-actions" style="margin-top: 20px;">
+          <button type="button" class="cancel-btn" onclick="closeAssignModal()">Cancel</button>
+          <button type="submit" class="submit-btn">Assign</button>
         </div>
       </form>
     </div>
