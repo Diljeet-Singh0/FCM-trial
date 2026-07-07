@@ -518,7 +518,7 @@ function renderScheduledRides() {
   const body = document.getElementById('scheduledBody');
   document.getElementById('scheduledCount').textContent = `${scheduledRides.length} scheduled rides`;
   if (!scheduledRides.length) {
-    body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#64748B">No scheduled rides found.</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#64748B">No scheduled rides found.</td></tr>';
     return;
   }
   
@@ -571,6 +571,7 @@ function renderScheduledRides() {
     return `<tr>
       <td><code style="background:#1E293B;padding:3px 8px;border-radius:4px;font-size:12px">${esc(r.booking_id)}</code></td>
       <td><strong>${esc(r.user ? r.user.name : 'Unknown')}</strong><br><span style="font-size:11px;color:#64748B">${esc(r.user ? r.user.phone : '')}</span></td>
+      <td>${r.company ? `<strong>${esc(r.company.name)}</strong>` : '<span style="color:#94A3B8;">—</span>'}</td>
       <td style="font-size:13px;">
         <span style="color:#10B981;font-weight:600;">Pickup:</span> ${esc(r.pickup_location)}<br>
         <span style="color:#EF4444;font-weight:600;">Drop:</span> ${esc(r.drop_location)}

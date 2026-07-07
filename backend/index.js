@@ -2387,7 +2387,7 @@ const sendScheduledRideFCM = async (userId, title, body, dataPayload) => {
 app.post('/scheduled-rides', async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { user_id, pickup_location, pickup_lat, pickup_lng, drop_location, drop_lat, drop_lng, goods_description, scheduled_time } = req.body;
+    const { user_id, pickup_location, pickup_lat, pickup_lng, drop_location, drop_lat, drop_lng, goods_description, scheduled_time, company_id } = req.body;
 
     if (!user_id || !pickup_location || !drop_location || !scheduled_time) {
       return res.status(400).json({ success: false, error: 'Missing required fields: user_id, pickup_location, drop_location, scheduled_time' });
@@ -2423,6 +2423,7 @@ app.post('/scheduled-rides', async (req, res) => {
         drop_lng: drop_lng || null,
         goods_description: goods_description || null,
         scheduled_time: schedDate.toISOString(),
+        company_id: company_id || null,
         status: 'pending'
       })
       .select()
@@ -2456,7 +2457,17 @@ app.get('/scheduled-rides/user/:userId', async (req, res) => {
       .eq('user_id', userId)
       .order('scheduled_time', { ascending: true });
     if (error) throw error;
-    res.json({ success: true, rides: data || [] });
+
+    const enriched = await Promise.all((data || []).map(async (ride) => {
+      let companyInfo = null;
+      if (ride.company_id) {
+        const { data: c } = await supabase.from('transport_companies').select('id, name').eq('id', ride.company_id).maybeSingle();
+        companyInfo = c;
+      }
+      return { ...ride, company: companyInfo };
+    }));
+
+    res.json({ success: true, rides: enriched });
   } catch (error) {
     console.error('[ScheduledRide] user rides error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -2508,7 +2519,14 @@ app.get('/scheduled-rides/:rideId', async (req, res) => {
       driverInfo = d;
     }
 
-    res.json({ success: true, ride: { ...ride, user: userInfo, driver: driverInfo } });
+    // Enrich with company info
+    let companyInfo = null;
+    if (ride.company_id) {
+      const { data: c } = await supabase.from('transport_companies').select('id, name, location, contact_phone').eq('id', ride.company_id).maybeSingle();
+      companyInfo = c;
+    }
+
+    res.json({ success: true, ride: { ...ride, user: userInfo, driver: driverInfo, company: companyInfo } });
   } catch (error) {
     console.error('[ScheduledRide] detail error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -2719,10 +2737,11 @@ app.get('/admin/scheduled-rides', requireAdmin, async (req, res) => {
     const { data: rides, error } = await query;
     if (error) throw error;
 
-    // Enrich with user and driver info
+    // Enrich with user, driver and company info
     const enriched = await Promise.all((rides || []).map(async (ride) => {
       let userInfo = null;
       let driverInfo = null;
+      let companyInfo = null;
       if (ride.user_id) {
         const { data: u } = await supabase.from('users').select('id, name, phone, factory_name').eq('id', ride.user_id).maybeSingle();
         userInfo = u;
@@ -2731,7 +2750,11 @@ app.get('/admin/scheduled-rides', requireAdmin, async (req, res) => {
         const { data: d } = await supabase.from('users').select('id, name, phone, vehicle_number').eq('id', ride.driver_id).maybeSingle();
         driverInfo = d;
       }
-      return { ...ride, user: userInfo, driver: driverInfo };
+      if (ride.company_id) {
+        const { data: c } = await supabase.from('transport_companies').select('id, name').eq('id', ride.company_id).maybeSingle();
+        companyInfo = c;
+      }
+      return { ...ride, user: userInfo, driver: driverInfo, company: companyInfo };
     }));
 
     res.json({ success: true, rides: enriched });
