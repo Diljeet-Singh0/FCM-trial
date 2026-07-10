@@ -635,6 +635,13 @@ app.post('/gozo/create-request', async (req, res) => {
       throw requestError;
     }
 
+    // Send admin notification
+    sendAdminFCM(
+      '🚗 New Ride Request',
+      `New Ride Request — ${pickupAddress} to ${dropAddress}`,
+      { type: 'new_ride_request', requestId: requestRow.id }
+    );
+
     const { data: transporters, error: transportersError } = await supabase
       .from('users')
       .select('id, fcm_token')
@@ -943,6 +950,12 @@ app.post('/gozo/cancel-request', async (req, res) => {
     if (updateError) {
       throw updateError;
     }
+
+    sendAdminFCM(
+      '❌ Ride Unassigned',
+      `Ride Unassigned — Ride was cancelled and needs a driver`,
+      { type: 'ride_unassigned', requestId }
+    );
 
     cancelCascade(requestId);
 
@@ -2246,6 +2259,294 @@ app.get('/gozo/driver-stats/:transporterId', async (req, res) => {
   }
 });
 
+// Helper: send FCM to all admin tokens
+const sendAdminFCM = async (title, body, dataPayload) => {
+  if (!admin.apps.length || !supabase) return;
+  try {
+    const { data: adminTokens, error } = await supabase.from('admin_fcm_tokens').select('token');
+    if (error) {
+      console.error('[Admin FCM] Failed to fetch admin tokens:', error.message);
+      return;
+    }
+    if (!adminTokens || adminTokens.length === 0) {
+      console.log('[Admin FCM] No registered admin tokens found.');
+      return;
+    }
+    
+    console.log(`[Admin FCM] Sending "${dataPayload.type}" to ${adminTokens.length} admin(s)...`);
+    
+    for (const { token } of adminTokens) {
+      try {
+        await admin.messaging().send({
+          token,
+          notification: { title, body },
+          data: dataPayload,
+          android: { 
+            priority: 'high',
+            notification: { channelId: 'admin_notifications' }
+          },
+          apns: {
+            headers: { "apns-priority": "10" },
+            payload: { aps: { sound: "default" } }
+          }
+        });
+      } catch (sendErr) {
+        console.warn(`[Admin FCM] Send failed for token: ${token.slice(0, 15)}... Error:`, sendErr.message);
+        // If token is invalid/not registered, clean it up from DB
+        if (sendErr.code === 'messaging/invalid-registration-token' || 
+            sendErr.code === 'messaging/registration-token-not-registered') {
+          console.log(`[Admin FCM] Removing stale token: ${token.slice(0, 15)}...`);
+          await supabase.from('admin_fcm_tokens').delete().eq('token', token);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Admin FCM] Unexpected error:', err.message);
+  }
+};
+
+// ─── Driver Db Status Update ───
+app.patch('/drivers/:driverId/status', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { driverId } = req.params;
+    const { status } = req.body;
+    
+    if (!status || !['offline', 'available', 'in_ride'].includes(status)) {
+      return res.status(400).json({ success: false, error: 'Invalid status. Must be offline, available, or in_ride' });
+    }
+    
+    const { error } = await supabase
+      .from('users')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', driverId)
+      .eq('role', 'transporter');
+      
+    if (error) throw error;
+    
+    // Also update in-memory driverStatusStore online flag to keep it in sync
+    if (driverStatusStore[driverId]) {
+      driverStatusStore[driverId].online = (status === 'available' || status === 'in_ride');
+      driverStatusStore[driverId].lastSeen = Date.now();
+    } else {
+      driverStatusStore[driverId] = {
+        online: (status === 'available' || status === 'in_ride'),
+        lastSeen: Date.now()
+      };
+    }
+    
+    console.log(`[Driver DB Status] Driver ${driverId} set status to ${status}`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Driver Status PATCH] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Admin App Endpoints ───
+
+// GET /admin/drivers/status
+app.get('/admin/drivers/status', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { data: drivers, error } = await supabase
+      .from('users')
+      .select('id, name, phone, vehicle_number, status')
+      .eq('role', 'transporter')
+      .order('name');
+      
+    if (error) throw error;
+    
+    const enriched = (drivers || []).map(d => ({
+      ...d,
+      vehicle_type: 'Truck', // Default vehicle type since column is missing in DB schema
+      status: d.status || 'offline'
+    }));
+    
+    res.json({ success: true, drivers: enriched });
+  } catch (error) {
+    console.error('[Admin Drivers Status GET] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /admin/test-fcm
+app.post('/admin/test-fcm', requireAdmin, async (req, res) => {
+  try {
+    await sendAdminFCM(
+      '🔔 Test Notification',
+      'This is a test notification from the GoZo Admin Panel.',
+      { type: 'test_notification', timestamp: String(Date.now()) }
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin Test FCM] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /admin/fcm-token
+app.post('/admin/fcm-token', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ success: false, error: 'Missing token' });
+    
+    const { error } = await supabase
+      .from('admin_fcm_tokens')
+      .upsert({ token, updated_at: new Date().toISOString() }, { onConflict: 'token' });
+      
+    if (error) throw error;
+    console.log(`[Admin FCM] Registered token: ${token.slice(0, 20)}...`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin FCM Register POST] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /admin/rides
+app.get('/admin/rides', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { status, date } = req.query;
+    
+    let query = supabase.from('requests').select('*').order('created_at', { ascending: false });
+    
+    if (status) {
+      query = query.eq('status', status);
+    }
+    
+    if (date) {
+      const dayStart = new Date(date + 'T00:00:00Z').toISOString();
+      const dayEnd = new Date(date + 'T23:59:59Z').toISOString();
+      query = query.gte('created_at', dayStart).lte('created_at', dayEnd);
+    }
+    
+    const { data: requests, error } = await query;
+    if (error) throw error;
+    
+    const enriched = await Promise.all((requests || []).map(async (r) => {
+      let userInfo = null;
+      if (r.owner_id) {
+        const { data: u } = await supabase.from('users').select('id, name, phone, factory_name, factory_address').eq('id', r.owner_id).maybeSingle();
+        userInfo = u;
+      }
+      
+      let driverInfo = null;
+      if (r.transporter_id) {
+        const { data: d } = await supabase.from('users').select('id, name, phone, vehicle_number, status').eq('id', r.transporter_id).maybeSingle();
+        driverInfo = d ? { ...d, vehicle_type: 'Truck' } : null;
+      }
+      
+      const priceInfo = getPredefinedPrice(r.goods_type, r.weight_kg);
+      
+      return {
+        ...r,
+        user: userInfo,
+        driver: driverInfo,
+        price_inr: r.accepted_price || priceInfo.total,
+        priceInfo
+      };
+    }));
+    
+    res.json({ success: true, rides: enriched });
+  } catch (error) {
+    console.error('[Admin Rides GET] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /admin/rides/:requestId
+app.get('/admin/rides/:requestId', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { requestId } = req.params;
+    
+    const { data: request, error } = await supabase
+      .from('requests')
+      .select('*')
+      .eq('id', requestId)
+      .single();
+      
+    if (error) throw error;
+    
+    let userInfo = null;
+    if (request.owner_id) {
+      const { data: u } = await supabase.from('users').select('id, name, phone, factory_name, factory_address').eq('id', request.owner_id).maybeSingle();
+      userInfo = u;
+    }
+    
+    let driverInfo = null;
+    if (request.transporter_id) {
+      const { data: d } = await supabase.from('users').select('id, name, phone, vehicle_number, status').eq('id', request.transporter_id).maybeSingle();
+      driverInfo = d ? { ...d, vehicle_type: 'Truck' } : null;
+    }
+    
+    const priceInfo = getPredefinedPrice(request.goods_type, request.weight_kg);
+    
+    const timeline = [];
+    const createdTime = request.created_at ? new Date(request.created_at).toLocaleString('en-IN') : 'N/A';
+    timeline.push({ status: 'Booked', active: true, time: createdTime });
+    
+    const isAssigned = ['matched', 'picked_up', 'on_the_way', 'completed'].includes(request.status);
+    timeline.push({ status: 'Assigned', active: isAssigned, time: isAssigned ? (request.updated_at ? new Date(request.updated_at).toLocaleString('en-IN') : createdTime) : '' });
+    
+    const isPickedUp = ['picked_up', 'on_the_way', 'completed'].includes(request.status);
+    timeline.push({ status: 'Picked Up', active: isPickedUp, time: isPickedUp ? (request.updated_at ? new Date(request.updated_at).toLocaleString('en-IN') : '') : '' });
+    
+    const isDelivered = request.status === 'completed';
+    timeline.push({ status: 'Delivered', active: isDelivered, time: isDelivered ? (request.updated_at ? new Date(request.updated_at).toLocaleString('en-IN') : '') : '' });
+    
+    res.json({
+      success: true,
+      ride: {
+        ...request,
+        user: userInfo,
+        driver: driverInfo,
+        price_inr: request.accepted_price || priceInfo.total,
+        priceInfo,
+        timeline
+      }
+    });
+  } catch (error) {
+    console.error('[Admin Ride Detail GET] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /admin/drivers/:driverId/rides
+app.get('/admin/drivers/:driverId/rides', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { driverId } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = parseInt(req.query.offset) || 0;
+    
+    const { data: rides, error } = await supabase
+      .from('requests')
+      .select('*')
+      .eq('transporter_id', driverId)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+      
+    if (error) throw error;
+    
+    const enriched = (rides || []).map(r => {
+      const priceInfo = getPredefinedPrice(r.goods_type, r.weight_kg);
+      return {
+        ...r,
+        price_inr: r.accepted_price || priceInfo.total
+      };
+    });
+    
+    res.json({ success: true, rides: enriched });
+  } catch (error) {
+    console.error('[Admin Driver Rides History GET] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ─── Admin Panel API ───
 app.post('/admin/auth', (req, res) => {
   const { pin } = req.body;
@@ -2436,6 +2737,13 @@ app.post('/scheduled-rides', async (req, res) => {
       '📅 Ride Scheduled!',
       `Your ride (${bookingId}) has been scheduled. We will assign a driver soon.`,
       { type: 'scheduled_ride_confirmed', rideId: ride.id, bookingId }
+    );
+
+    // Send admin notification
+    sendAdminFCM(
+      '📅 New Scheduled Ride',
+      `New Scheduled Ride — ${scheduled_time} — ${pickup_location} to ${drop_location}`,
+      { type: 'new_scheduled_ride', rideId: ride.id }
     );
 
     console.log(`[ScheduledRide] Created ${bookingId} for user ${user_id}`);
@@ -2913,6 +3221,25 @@ async function runStartupMigration() {
     if (testUserCity && testUserCity.message.includes('does not exist')) {
       console.log('[Migration] Column users.city is missing. Running DDL...');
       await supabase.rpc('exec_sql', { sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;` }).maybeSingle();
+    }
+
+    const { error: testUserStatus } = await supabase.from('users').select('status').limit(1);
+    if (testUserStatus && testUserStatus.message.includes('does not exist')) {
+      console.log('[Migration] Column users.status is missing. Running DDL...');
+      await supabase.rpc('exec_sql', { sql: `ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'offline';` }).maybeSingle();
+    }
+
+    const { error: testAdminTokens } = await supabase.from('admin_fcm_tokens').select('id').limit(1);
+    if (testAdminTokens && (testAdminTokens.message.includes('does not exist') || testAdminTokens.code === '42P01')) {
+      console.log('[Migration] Table admin_fcm_tokens is missing. Running DDL...');
+      await supabase.rpc('exec_sql', { sql: `
+        CREATE TABLE IF NOT EXISTS admin_fcm_tokens (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          token TEXT NOT NULL UNIQUE,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          updated_at TIMESTAMPTZ DEFAULT now()
+        );
+      ` }).maybeSingle();
     }
 
     // 2. Populate routes_v2
