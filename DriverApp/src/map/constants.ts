@@ -26,6 +26,11 @@ export const STEP_SNAP_THRESHOLD_KM = 0.03;
 // Distance threshold to consider arrived (km)
 export const ARRIVAL_THRESHOLD_KM = 0.05;
 
+// Off-route detection & rerouting
+export const OFF_ROUTE_THRESHOLD_KM = 0.05; // 50 meters — driver is considered off-route
+export const REROUTE_COOLDOWN_MS = 10000; // 10 seconds between reroute attempts
+export const OFF_ROUTE_CONFIRM_COUNT = 3; // consecutive off-route readings before triggering reroute
+
 // Camera settings
 export const CAMERA_ZOOM_NAVIGATING = 17;
 export const CAMERA_ZOOM_PREVIEW = 14;

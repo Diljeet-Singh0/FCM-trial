@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Image, Modal, Platform, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { fetchDriverHistory } from '../api';
 
+
 type HistoryItem = {
   id: string;
   goods_type: string;
@@ -14,21 +15,16 @@ type HistoryItem = {
   rating?: number;
   builty_image?: string;
   driver_name?: string;
+  driverCut?: number;
 };
 
 type Props = {
   transporterId: string;
   onBack: () => void;
+  t: any;
 };
 
-const STATUS_MAP: Record<string, { label: string; color: string; icon: string }> = {
-  matched: { label: 'Assigned', color: '#F59E0B', icon: '🔄' },
-  picked_up: { label: 'Picked Up', color: '#0369A1', icon: '📦' },
-  on_the_way: { label: 'On the Way', color: '#1A56DB', icon: '🚛' },
-  completed: { label: 'Delivered', color: '#059669', icon: '✅' },
-};
-
-const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
+const DriverHistoryScreen = ({ transporterId, onBack, t }: Props) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<HistoryItem | null>(null);
@@ -38,11 +34,27 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
     loadHistory();
   }, []);
 
+
+
   const loadHistory = async () => {
     setLoading(true);
     const res = await fetchDriverHistory(transporterId);
     if (res.success) setHistory(res.requests);
     setLoading(false);
+  };
+
+  const getStatusInfo = (status: string) => {
+    switch (status) {
+      case 'matched':
+        return { label: t.statusAssigned, color: '#F59E0B', icon: '🔄' };
+      case 'picked_up':
+        return { label: t.statusPickedUp, color: '#0369A1', icon: '📦' };
+      case 'on_the_way':
+        return { label: t.statusOnTheWay, color: '#1A56DB', icon: '🚛' };
+      case 'completed':
+      default:
+        return { label: t.statusDelivered, color: '#059669', icon: '✅' };
+    }
   };
 
   const formatDate = (dateStr: string) => {
@@ -56,7 +68,7 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
 
   // Detail view
   if (selectedItem) {
-    const info = STATUS_MAP[selectedItem.status] || STATUS_MAP.completed;
+    const info = getStatusInfo(selectedItem.status);
     return (
       <View style={s.container}>
         <StatusBar barStyle="light-content" backgroundColor="#1A56DB" />
@@ -64,7 +76,7 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
           <TouchableOpacity onPress={() => setSelectedItem(null)} style={s.backBtn}>
             <Text style={s.backArrow}>←</Text>
           </TouchableOpacity>
-          <Text style={s.headerTitle}>Trip Details</Text>
+          <Text style={s.headerTitle}>{t.tripDetails}</Text>
           <View style={{ width: 40 }} />
         </View>
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }} showsVerticalScrollIndicator={false}>
@@ -77,38 +89,38 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
           {/* Trip ID & Date */}
           <View style={s.detailCard}>
             <View style={s.detailRow}>
-              <Text style={s.detailLabel}>Trip ID</Text>
+              <Text style={s.detailLabel}>{t.tripId}</Text>
               <Text style={s.detailValue}>GOZO-{selectedItem.id.slice(0, 7).toUpperCase()}</Text>
             </View>
             <View style={s.detailDivider} />
             <View style={s.detailRow}>
-              <Text style={s.detailLabel}>Date</Text>
+              <Text style={s.detailLabel}>{t.date}</Text>
               <Text style={s.detailValue}>{formatDate(selectedItem.created_at)}</Text>
             </View>
             <View style={s.detailDivider} />
             <View style={s.detailRow}>
-              <Text style={s.detailLabel}>Earnings</Text>
-              <Text style={[s.detailValue, { color: '#059669', fontWeight: '800' }]}>₹{selectedItem.accepted_price}</Text>
+              <Text style={s.detailLabel}>{t.driverCut}</Text>
+              <Text style={[s.detailValue, { color: '#059669', fontWeight: '800' }]}>₹{selectedItem.driverCut ?? selectedItem.accepted_price}</Text>
             </View>
           </View>
 
           {/* Goods info */}
           <View style={s.detailCard}>
-            <Text style={s.cardTitle}>Shipment Info</Text>
+            <Text style={s.cardTitle}>{t.shipmentInfo}</Text>
             <View style={s.detailRow}>
-              <Text style={s.detailLabel}>Goods</Text>
+              <Text style={s.detailLabel}>{t.goods}</Text>
               <Text style={s.detailValue}>{selectedItem.goods_type}</Text>
             </View>
             <View style={s.detailDivider} />
             <View style={s.detailRow}>
-              <Text style={s.detailLabel}>Weight</Text>
+              <Text style={s.detailLabel}>{t.weight}</Text>
               <Text style={s.detailValue}>{selectedItem.weight_kg} kg</Text>
             </View>
             {selectedItem.rating && (
               <>
                 <View style={s.detailDivider} />
                 <View style={s.detailRow}>
-                  <Text style={s.detailLabel}>Rating</Text>
+                  <Text style={s.detailLabel}>{t.rating}</Text>
                   <Text style={s.detailValue}>{'★'.repeat(selectedItem.rating)}{'☆'.repeat(5 - selectedItem.rating)}</Text>
                 </View>
               </>
@@ -117,7 +129,7 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
 
           {/* Route */}
           <View style={s.detailCard}>
-            <Text style={s.cardTitle}>Route</Text>
+            <Text style={s.cardTitle}>{t.route}</Text>
             <View style={s.routeSection}>
               <View style={s.routeDots}>
                 <View style={s.greenDot} />
@@ -126,11 +138,11 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
               </View>
               <View style={{ flex: 1 }}>
                 <View>
-                  <Text style={s.routeLabel}>Pickup</Text>
+                  <Text style={s.routeLabel}>{t.pickup}</Text>
                   <Text style={s.routeAddr}>{selectedItem.pickup_address}</Text>
                 </View>
                 <View style={{ marginTop: 16 }}>
-                  <Text style={s.routeLabel}>Drop-off</Text>
+                  <Text style={s.routeLabel}>{t.dropOff}</Text>
                   <Text style={s.routeAddr}>{selectedItem.drop_address}</Text>
                 </View>
               </View>
@@ -140,7 +152,7 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
           {/* Builty */}
           {selectedItem.builty_image && (
             <View style={s.detailCard}>
-              <Text style={s.cardTitle}>📄 Builty Receipt</Text>
+              <Text style={s.cardTitle}>{t.builtyReceipt}</Text>
               <TouchableOpacity onPress={() => setShowBuilty(true)} activeOpacity={0.8}>
                 <Image
                   source={{ uri: `data:image/jpeg;base64,${selectedItem.builty_image}` }}
@@ -148,12 +160,13 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
                   resizeMode="cover"
                 />
                 <View style={s.builtyOverlay}>
-                  <Text style={s.builtyOverlayText}>Tap to view</Text>
+                  <Text style={s.builtyOverlayText}>{t.tapToView}</Text>
                 </View>
               </TouchableOpacity>
             </View>
           )}
         </ScrollView>
+
 
         {/* Full-screen builty */}
         <Modal visible={showBuilty} transparent animationType="fade">
@@ -178,7 +191,7 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
         <TouchableOpacity onPress={onBack} style={s.backBtn}>
           <Text style={s.backArrow}>←</Text>
         </TouchableOpacity>
-        <Text style={s.headerTitle}>Trip History</Text>
+        <Text style={s.headerTitle}>{t.tripHistory}</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -186,17 +199,17 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
       <View style={s.statsBanner}>
         <View style={s.statCol}>
           <Text style={s.statNum}>{history.filter(h => h.status === 'completed').length}</Text>
-          <Text style={s.statLbl}>Completed</Text>
+          <Text style={s.statLbl}>{t.completed}</Text>
         </View>
         <View style={s.statDivider} />
         <View style={s.statCol}>
           <Text style={s.statNum}>₹{totalEarnings}</Text>
-          <Text style={s.statLbl}>Total Earned</Text>
+          <Text style={s.statLbl}>{t.totalEarned}</Text>
         </View>
         <View style={s.statDivider} />
         <View style={s.statCol}>
           <Text style={s.statNum}>{history.length}</Text>
-          <Text style={s.statLbl}>Total Trips</Text>
+          <Text style={s.statLbl}>{t.totalTrips}</Text>
         </View>
       </View>
 
@@ -207,7 +220,7 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }} showsVerticalScrollIndicator={false}>
           {history.map((item) => {
-            const info = STATUS_MAP[item.status] || STATUS_MAP.completed;
+            const info = getStatusInfo(item.status);
             return (
               <TouchableOpacity key={item.id} style={s.histCard} onPress={() => setSelectedItem(item)} activeOpacity={0.7}>
                 <View style={s.histCardAccent} />
@@ -232,7 +245,7 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
                   </View>
                   <View style={s.histFooter}>
                     <Text style={s.histDate}>{formatDate(item.created_at)}</Text>
-                    <Text style={s.histPrice}>₹{item.accepted_price}</Text>
+                    <Text style={s.histPrice}>₹{item.driverCut ?? item.accepted_price}</Text>
                   </View>
                 </View>
               </TouchableOpacity>
@@ -241,8 +254,8 @@ const DriverHistoryScreen = ({ transporterId, onBack }: Props) => {
           {history.length === 0 && (
             <View style={s.emptyState}>
               <Text style={{ fontSize: 48 }}>📭</Text>
-              <Text style={s.emptyTitle}>No trips yet</Text>
-              <Text style={s.emptySub}>Your completed trips will appear here</Text>
+              <Text style={s.emptyTitle}>{t.noTripsYet}</Text>
+              <Text style={s.emptySub}>{t.completedTripsHere}</Text>
             </View>
           )}
         </ScrollView>

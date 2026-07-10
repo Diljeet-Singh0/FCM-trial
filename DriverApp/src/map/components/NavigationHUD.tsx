@@ -1,5 +1,5 @@
 import React from 'react';
-import {View, Text, StyleSheet} from 'react-native';
+import {View, Text, StyleSheet, ActivityIndicator} from 'react-native';
 import {colors, typography, spacing, borderRadius, shadows} from '../theme';
 import {NavigationState} from '../types';
 import {formatDistance} from '../utils/geo';
@@ -16,12 +16,25 @@ const NavigationHUD: React.FC<NavigationHUDProps> = ({navigationState}) => {
     nextManeuverModifier,
     distanceToNextManeuver,
     streetName,
+    isOffRoute,
+    isRerouting,
   } = navigationState;
 
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <View style={styles.mainRow}>
+        {isRerouting ? (
+          <View style={styles.reroutingBanner}>
+            <ActivityIndicator size="small" color="#FFFFFF" style={{marginRight: spacing.sm}} />
+            <Text style={styles.reroutingText}>Rerouting... finding a new path</Text>
+          </View>
+        ) : isOffRoute ? (
+          <View style={[styles.reroutingBanner, {backgroundColor: '#F59E0B'}]}>
+            <Text style={styles.reroutingText}>⚠️ Off Route! Recalculating soon...</Text>
+          </View>
+        ) : null}
+        
+        <View style={[styles.mainRow, (isRerouting || isOffRoute) && {opacity: 0.6}]}>
           <View style={styles.iconContainer}>
             <ManeuverIcon
               type={nextManeuverType}
@@ -110,6 +123,21 @@ const styles = StyleSheet.create({
     fontSize: typography.sizes.sm,
     fontWeight: typography.weights.semibold,
     color: colors.textSecondary,
+  },
+  reroutingBanner: {
+    backgroundColor: '#EF4444',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    borderTopLeftRadius: borderRadius.xl,
+    borderTopRightRadius: borderRadius.xl,
+  },
+  reroutingText: {
+    color: '#FFFFFF',
+    fontSize: typography.sizes.sm,
+    fontWeight: typography.weights.bold,
   },
 });
 

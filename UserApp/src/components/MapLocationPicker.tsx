@@ -377,7 +377,7 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
               returnKeyType="search"
             />
             {isSearching && (
-              <ActivityIndicator size="small" color="#1A56DB" style={{ marginRight: 8 }} />
+              <ActivityIndicator size="small" color="#10B981" style={{ marginRight: 8 }} />
             )}
             {searchQuery.length > 0 && !isSearching && (
               <TouchableOpacity
@@ -433,7 +433,7 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
           {/* Loading overlay */}
           {isLoading && (
             <View style={s.loadingOverlay}>
-              <ActivityIndicator size="large" color="#1A56DB" />
+              <ActivityIndicator size="large" color="#10B981" />
               <Text style={s.loadingText}>Loading map...</Text>
             </View>
           )}
@@ -453,7 +453,7 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
               <View style={s.addressTextWrapper}>
                 {isGeocoding ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <ActivityIndicator size="small" color="#1A56DB" style={{ marginRight: 8 }} />
+                    <ActivityIndicator size="small" color="#10B981" style={{ marginRight: 8 }} />
                     <Text style={s.addressResolving}>Resolving address...</Text>
                   </View>
                 ) : (
@@ -484,7 +484,7 @@ const MapLocationPicker = ({ visible, onClose, onConfirm, initialAddress }: Prop
 const s = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F0F4F8',
+    backgroundColor: '#F5F5F5',
   },
 
   // Search bar
@@ -494,7 +494,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 52,
     paddingBottom: 12,
-    backgroundColor: '#1A56DB',
+    backgroundColor: '#10B981',
     zIndex: 20,
   },
   closeBtn: {
@@ -526,7 +526,7 @@ const s = StyleSheet.create({
   searchInput: {
     flex: 1,
     fontSize: 15,
-    color: '#0F172A',
+    color: '#1A1A1A',
     paddingVertical: 11,
   },
   clearBtn: {
@@ -547,9 +547,9 @@ const s = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#F1F5F9',
+    borderColor: '#E2E8F0',
     elevation: 8,
-    shadowColor: '#1A3B6D',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.12,
     shadowRadius: 10,
@@ -561,7 +561,7 @@ const s = StyleSheet.create({
     alignItems: 'center',
     padding: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#F8FAFC',
+    borderBottomColor: '#F5F5F5',
   },
   searchResultIcon: {
     fontSize: 16,
@@ -569,7 +569,7 @@ const s = StyleSheet.create({
   },
   searchResultText: {
     fontSize: 14,
-    color: '#334155',
+    color: '#1A1A1A',
     flex: 1,
     lineHeight: 20,
     fontWeight: '500',
@@ -598,7 +598,7 @@ const s = StyleSheet.create({
   loadingText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#64748B',
+    color: '#6B6B6B',
     marginTop: 10,
   },
 
@@ -614,7 +614,7 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 6,
-    shadowColor: '#1A56DB',
+    shadowColor: '#10B981',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.2,
     shadowRadius: 8,
@@ -623,7 +623,7 @@ const s = StyleSheet.create({
   },
   gpsButtonIcon: {
     fontSize: 24,
-    color: '#1A56DB',
+    color: '#10B981',
   },
 
   // Bottom bar
@@ -661,7 +661,7 @@ const s = StyleSheet.create({
   addressLabel: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#94A3B8',
+    color: '#6B6B6B',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 4,
@@ -673,26 +673,26 @@ const s = StyleSheet.create({
   addressText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#0F172A',
+    color: '#1A1A1A',
     lineHeight: 21,
   },
   addressResolving: {
     fontSize: 14,
-    color: '#64748B',
+    color: '#6B6B6B',
     fontStyle: 'italic',
   },
   confirmBtn: {
-    backgroundColor: '#1A56DB',
+    backgroundColor: '#10B981',
     borderRadius: 14,
     paddingVertical: 16,
     elevation: 4,
-    shadowColor: '#1A56DB',
+    shadowColor: '#10B981',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
   },
   confirmBtnDisabled: {
-    backgroundColor: '#93C5FD',
+    backgroundColor: '#D1D5DB',
     elevation: 0,
     shadowOpacity: 0,
   },

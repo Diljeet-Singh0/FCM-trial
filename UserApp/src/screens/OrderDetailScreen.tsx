@@ -1,22 +1,32 @@
 import React, { useEffect, useState } from 'react';
-import { Image, Modal, Platform, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, Linking, Modal, Platform, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { fetchRequestDetails } from '../api';
+import { API_BASE_URL } from '../config';
+import { saveBuiltyFromBase64 } from '../utils/downloadBuilty';
 
 type Props = {
   requestId: string;
   onBack: () => void;
+  onTrackDriver?: (
+    driverName: string,
+    driverPhone: string,
+    pickupAddress: string,
+    dropAddress: string,
+    tripStatus: string
+  ) => void;
+  onViewCertificate?: (tripId: string) => void;
 };
 
 const STATUS_MAP: Record<string, { label: string; color: string; icon: string }> = {
   pending: { label: 'Pending', color: '#F59E0B', icon: '⏳' },
-  matched: { label: 'Driver Assigned', color: '#059669', icon: '✅' },
-  picked_up: { label: 'Picked Up', color: '#0369A1', icon: '📦' },
-  on_the_way: { label: 'On the Way', color: '#1A56DB', icon: '🚛' },
-  completed: { label: 'Delivered', color: '#059669', icon: '🎉' },
-  cancelled: { label: 'Cancelled', color: '#DC2626', icon: '✕' },
+  matched: { label: 'Driver Assigned', color: '#10B981', icon: '✅' },
+  picked_up: { label: 'Picked Up', color: '#10B981', icon: '📦' },
+  on_the_way: { label: 'On the Way', color: '#10B981', icon: '🚛' },
+  completed: { label: 'Delivered', color: '#10B981', icon: '🎉' },
+  cancelled: { label: 'Cancelled', color: '#E53935', icon: '✕' },
 };
 
-const OrderDetailScreen = ({ requestId, onBack }: Props) => {
+const OrderDetailScreen = ({ requestId, onBack, onTrackDriver, onViewCertificate }: Props) => {
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [showBuilty, setShowBuilty] = useState(false);
@@ -40,7 +50,7 @@ const OrderDetailScreen = ({ requestId, onBack }: Props) => {
   if (loading || !order) {
     return (
       <View style={s.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#1A56DB" />
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
         <View style={s.header}>
           <TouchableOpacity onPress={onBack} style={s.backBtn}>
             <Text style={s.backArrow}>←</Text>
@@ -49,7 +59,7 @@ const OrderDetailScreen = ({ requestId, onBack }: Props) => {
           <View style={{ width: 40 }} />
         </View>
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-          <Text style={{ color: '#94A3B8', fontSize: 14 }}>Loading...</Text>
+          <Text style={{ color: '#6B6B6B', fontSize: 14 }}>Loading...</Text>
         </View>
       </View>
     );
@@ -60,7 +70,7 @@ const OrderDetailScreen = ({ requestId, onBack }: Props) => {
 
   return (
     <View style={s.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#1A56DB" />
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
       <View style={s.header}>
         <TouchableOpacity onPress={onBack} style={s.backBtn}>
           <Text style={s.backArrow}>←</Text>
@@ -91,6 +101,24 @@ const OrderDetailScreen = ({ requestId, onBack }: Props) => {
           </View>
         )}
 
+        {/* Goods Responsibility Certificate Banner */}
+        {onViewCertificate && (order.status === 'picked_up' || order.status === 'on_the_way' || order.status === 'completed') && (
+          <TouchableOpacity
+            style={s.certificateBanner}
+            onPress={() => onViewCertificate(order.id)}
+            activeOpacity={0.9}
+          >
+            <View style={s.certIconContainer}>
+              <Text style={s.certIcon}>📜</Text>
+            </View>
+            <View style={s.certTextContainer}>
+              <Text style={s.certTitle}>Goods Certificate Issued</Text>
+              <Text style={s.certSubtitle}>GoZo has taken responsibility for your goods. Tap to view and share.</Text>
+            </View>
+            <Text style={s.certArrow}>→</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Order Info */}
         <View style={s.card}>
           <Text style={s.cardTitle}>📋 Order Info</Text>
@@ -118,7 +146,11 @@ const OrderDetailScreen = ({ requestId, onBack }: Props) => {
               <View style={s.divider} />
               <View style={s.row}>
                 <Text style={s.label}>Price</Text>
-                <Text style={[s.value, { color: '#059669', fontWeight: '800' }]}>₹{order.accepted_price}</Text>
+                <Text style={[s.value, { color: '#10B981', fontWeight: '800' }]}>
+                  {order.weight_kg <= 500
+                    ? `₹${order.accepted_price} - ₹${order.accepted_price + 50}`
+                    : `₹${order.accepted_price}`}
+                </Text>
               </View>
             </>
           )}
@@ -147,6 +179,24 @@ const OrderDetailScreen = ({ requestId, onBack }: Props) => {
                 {order.driver_vehicle && <Text style={s.driverVehicle}>🚛 {order.driver_vehicle}</Text>}
               </View>
             </View>
+
+            {/* Live tracking CTA for ongoing trips */}
+            {onTrackDriver && (order.status === 'matched' || order.status === 'picked_up' || order.status === 'on_the_way') && (
+              <TouchableOpacity
+                style={s.trackBtn}
+                onPress={() => onTrackDriver(
+                  order.driver_name,
+                  order.driver_phone || '',
+                  order.pickup_address,
+                  order.drop_address,
+                  order.status
+                )}
+                activeOpacity={0.85}
+              >
+                <View style={s.pulseDot} />
+                <Text style={s.trackBtnText}>Track Driver Live  →</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -177,7 +227,16 @@ const OrderDetailScreen = ({ requestId, onBack }: Props) => {
           <View style={s.card}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <Text style={s.cardTitle}>📄 Builty Receipt</Text>
-              <View style={s.verifiedBadge}><Text style={s.verifiedText}>✓ Verified</Text></View>
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                <View style={s.verifiedBadge}><Text style={s.verifiedText}>✓ Verified</Text></View>
+                <TouchableOpacity 
+                  onPress={() => order.builty_image && saveBuiltyFromBase64(requestId, order.builty_image)}
+                  style={s.cardDownloadBtn}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.cardDownloadBtnText}>⬇️ Download</Text>
+                </TouchableOpacity>
+              </View>
             </View>
             <TouchableOpacity onPress={() => setShowBuilty(true)} activeOpacity={0.8}>
               <Image
@@ -195,12 +254,22 @@ const OrderDetailScreen = ({ requestId, onBack }: Props) => {
 
       {/* Fullscreen builty */}
       <Modal visible={showBuilty} transparent animationType="fade">
-        <View style={s.fullscreenBg}>
-          <TouchableOpacity style={s.fullscreenClose} onPress={() => setShowBuilty(false)}>
-            <Text style={{ color: '#FFF', fontSize: 20 }}>✕</Text>
-          </TouchableOpacity>
+        <View style={s.fullscreenOverlay}>
+          <View style={s.fullscreenHeader}>
+            <TouchableOpacity onPress={() => setShowBuilty(false)} style={s.fullscreenCloseBtn}>
+              <Text style={s.fullscreenCloseText}>✕</Text>
+            </TouchableOpacity>
+            <Text style={s.fullscreenTitle}>Builty Receipt</Text>
+            <TouchableOpacity 
+              onPress={() => order.builty_image && saveBuiltyFromBase64(requestId, order.builty_image)}
+              style={s.fullscreenDownloadBtn}
+              activeOpacity={0.7}
+            >
+              <Text style={s.fullscreenDownloadBtnText}>⬇️ Download</Text>
+            </TouchableOpacity>
+          </View>
           {order.builty_image && (
-            <Image source={{ uri: `data:image/jpeg;base64,${order.builty_image}` }} style={s.fullscreenImg} resizeMode="contain" />
+            <Image source={{ uri: `data:image/jpeg;base64,${order.builty_image}` }} style={s.fullscreenImage} resizeMode="contain" />
           )}
         </View>
       </Modal>
@@ -209,67 +278,152 @@ const OrderDetailScreen = ({ requestId, onBack }: Props) => {
 };
 
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F0F4F8' },
+  container: { flex: 1, backgroundColor: '#F5F5F5' },
   header: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 16, paddingVertical: 14,
     paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 52,
-    backgroundColor: '#1A56DB',
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderColor: '#E2E8F0',
   },
-  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.18)', justifyContent: 'center', alignItems: 'center' },
-  backArrow: { fontSize: 22, color: '#FFF' },
-  headerTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: '#FFF', textAlign: 'center' },
+  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center' },
+  backArrow: { fontSize: 22, color: '#1A1A1A' },
+  headerTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: '#1A1A1A', textAlign: 'center' },
 
-  statusBanner: { borderRadius: 16, padding: 20, alignItems: 'center', marginBottom: 14, elevation: 3 },
+  statusBanner: { borderRadius: 12, padding: 20, alignItems: 'center', marginBottom: 14, elevation: 3 },
   statusIcon: { fontSize: 36 },
   statusLabel: { color: '#FFF', fontSize: 20, fontWeight: '800', marginTop: 6 },
 
   card: {
-    backgroundColor: '#FFF', borderRadius: 16, padding: 18, marginBottom: 14,
+    backgroundColor: '#FFF', borderRadius: 12, padding: 18, marginBottom: 14,
     elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4,
-    borderWidth: 1, borderColor: '#F1F5F9',
+    borderWidth: 1, borderColor: '#E2E8F0',
   },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: '#0F172A', marginBottom: 14 },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: '#1A1A1A', marginBottom: 14 },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
-  label: { fontSize: 14, color: '#64748B', fontWeight: '500' },
-  value: { fontSize: 15, fontWeight: '700', color: '#0F172A' },
-  divider: { height: 1, backgroundColor: '#F1F5F9' },
+  label: { fontSize: 14, color: '#6B6B6B', fontWeight: '500' },
+  value: { fontSize: 15, fontWeight: '700', color: '#1A1A1A' },
+  divider: { height: 1, backgroundColor: '#E2E8F0' },
 
-  progressBarBg: { height: 6, backgroundColor: '#E2E8F0', borderRadius: 3, overflow: 'hidden' },
-  progressBarFill: { height: 6, backgroundColor: '#1A56DB', borderRadius: 3 },
+  progressBarBg: { height: 6, backgroundColor: '#F5F5F5', borderRadius: 3, overflow: 'hidden' },
+  progressBarFill: { height: 6, backgroundColor: '#10B981', borderRadius: 3 },
   progressLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
-  progressText: { fontSize: 10, color: '#94A3B8', fontWeight: '600' },
+  progressText: { fontSize: 10, color: '#6B6B6B', fontWeight: '600' },
 
   driverRow: { flexDirection: 'row', alignItems: 'center' },
-  driverAvatar: { width: 48, height: 48, borderRadius: 16, backgroundColor: '#1A56DB', justifyContent: 'center', alignItems: 'center' },
+  driverAvatar: { width: 48, height: 48, borderRadius: 8, backgroundColor: '#10B981', justifyContent: 'center', alignItems: 'center' },
   driverAvatarText: { color: '#FFF', fontSize: 20, fontWeight: '700' },
-  driverName: { fontSize: 16, fontWeight: '700', color: '#0F172A' },
-  driverPhone: { fontSize: 13, color: '#64748B', marginTop: 3 },
-  driverVehicle: { fontSize: 13, color: '#64748B', marginTop: 2 },
+  driverName: { fontSize: 16, fontWeight: '700', color: '#1A1A1A' },
+  driverPhone: { fontSize: 13, color: '#6B6B6B', marginTop: 3 },
+  driverVehicle: { fontSize: 13, color: '#6B6B6B', marginTop: 2 },
 
   routeSection: { flexDirection: 'row' },
   routeDots: { alignItems: 'center', marginRight: 14, paddingTop: 4 },
-  greenDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#22C55E', borderWidth: 2, borderColor: '#BBF7D0' },
-  redDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#EF4444', borderWidth: 2, borderColor: '#FECACA' },
+  greenDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#10B981', borderWidth: 2, borderColor: '#A7F3D0' },
+  redDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#E53935', borderWidth: 2, borderColor: '#FECACA' },
   routeLine: { width: 2, height: 28, backgroundColor: '#E2E8F0', marginVertical: 4 },
-  routeLabel: { fontSize: 11, color: '#94A3B8', fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
-  routeAddr: { fontSize: 14, fontWeight: '600', color: '#0F172A', marginTop: 2 },
+  routeLabel: { fontSize: 11, color: '#6B6B6B', fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
+  routeAddr: { fontSize: 14, fontWeight: '600', color: '#1A1A1A', marginTop: 2 },
 
-  verifiedBadge: { backgroundColor: '#ECFDF5', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
-  verifiedText: { color: '#059669', fontSize: 12, fontWeight: '700' },
-  builtyThumb: { width: '100%', height: 200, borderRadius: 12, backgroundColor: '#F1F5F9' },
+  verifiedBadge: { backgroundColor: '#E6F7F0', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
+  verifiedText: { color: '#10B981', fontSize: 12, fontWeight: '700' },
+  builtyThumb: { width: '100%', height: 200, borderRadius: 8, backgroundColor: '#F5F5F5' },
   builtyOverlay: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
-    backgroundColor: 'rgba(0,0,0,0.5)', borderBottomLeftRadius: 12, borderBottomRightRadius: 12, paddingVertical: 8,
+    backgroundColor: 'rgba(0,0,0,0.5)', borderBottomLeftRadius: 8, borderBottomRightRadius: 8, paddingVertical: 8,
   },
   builtyOverlayText: { color: '#FFF', textAlign: 'center', fontSize: 13, fontWeight: '600' },
-  fullscreenBg: { flex: 1, backgroundColor: '#000' },
-  fullscreenClose: {
-    position: 'absolute', top: 40, right: 16, zIndex: 10,
-    width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)',
-    justifyContent: 'center', alignItems: 'center',
+  cardDownloadBtn: { backgroundColor: '#E6F7F0', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: '#A7F3D0' },
+  cardDownloadBtnText: { color: '#10B981', fontSize: 12, fontWeight: '700' },
+  fullscreenOverlay: { flex: 1, backgroundColor: '#000' },
+  fullscreenHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 16, paddingVertical: 14, paddingTop: 40,
+    backgroundColor: 'rgba(0,0,0,0.8)',
   },
-  fullscreenImg: { flex: 1, width: '100%' },
+  fullscreenCloseBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
+  fullscreenCloseText: { color: '#FFFFFF', fontSize: 20, fontWeight: '600' },
+  fullscreenTitle: { flex: 1, color: '#FFFFFF', fontSize: 17, fontWeight: '700', textAlign: 'center' },
+  fullscreenImage: { flex: 1, width: '100%' },
+  fullscreenDownloadBtn: { backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8, justifyContent: 'center', alignItems: 'center' },
+  fullscreenDownloadBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
+  trackBtn: {
+    marginTop: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#10B981',
+    borderRadius: 28,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    elevation: 2,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+  },
+  pulseDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#FFFFFF',
+    marginRight: 10,
+  },
+  trackBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  certificateBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E6F7F0',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 14,
+    elevation: 2,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
+  },
+  certIconContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#10B981',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  certIcon: {
+    fontSize: 22,
+  },
+  certTextContainer: {
+    flex: 1,
+  },
+  certTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F5132',
+  },
+  certSubtitle: {
+    fontSize: 12,
+    color: '#0F5132',
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  certArrow: {
+    fontSize: 18,
+    color: '#10B981',
+    fontWeight: '700',
+    marginLeft: 8,
+  },
 });
 
 export default OrderDetailScreen;
+

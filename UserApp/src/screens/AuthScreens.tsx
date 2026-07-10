@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,14 +14,15 @@ import messaging from '@react-native-firebase/messaging';
 import { loginUser, verifyOtp, signupUser } from '../api';
 import MapLocationPicker from '../components/MapLocationPicker';
 
-type AuthStep = 'login' | 'otp' | 'signup';
+type AuthStep = 'phone' | 'otp' | 'signup';
 
 interface AuthScreensProps {
   onLoginSuccess: (userId: string, userName: string) => void;
 }
 
 const AuthScreens: React.FC<AuthScreensProps> = ({ onLoginSuccess }) => {
-  const [step, setStep] = useState<AuthStep>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [step, setStep] = useState<AuthStep>('phone');
   const [loading, setLoading] = useState(false);
 
   // Form State
@@ -34,20 +35,54 @@ const AuthScreens: React.FC<AuthScreensProps> = ({ onLoginSuccess }) => {
   const [factoryLng, setFactoryLng] = useState<number | null>(null);
 
   const [showMapPicker, setShowMapPicker] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
 
-  const handleLoginSubmit = async () => {
+  useEffect(() => {
+    let timer: any;
+    if (cooldown > 0) {
+      timer = setTimeout(() => {
+        setCooldown((prev) => prev - 1);
+      }, 1000);
+    }
+    return () => clearTimeout(timer);
+  }, [cooldown]);
+
+  const handlePhoneSubmit = async () => {
     if (!phone || phone.length < 10) {
       Alert.alert('Invalid Phone', 'Please enter a valid 10-digit phone number.');
       return;
     }
     setLoading(true);
-    const result = await loginUser(phone);
+    const result = await loginUser(phone, 'owner');
     setLoading(false);
 
     if (result.success) {
+      if (authMode === 'login' && result.isNewUser) {
+        Alert.alert('Not Registered', 'This phone number is not registered. Please create an account.');
+        return;
+      }
+      if (authMode === 'signup' && !result.isNewUser) {
+        Alert.alert('Already Registered', 'This phone number is already registered. Please log in instead.');
+        return;
+      }
       setStep('otp');
+      setCooldown(30);
     } else {
       Alert.alert('Error', result.error || 'Failed to request OTP');
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (cooldown > 0) return;
+    setLoading(true);
+    const result = await loginUser(phone, 'owner');
+    setLoading(false);
+
+    if (result.success) {
+      Alert.alert('OTP Sent', 'A new verification code has been sent to your phone number.');
+      setCooldown(30);
+    } else {
+      Alert.alert('Error', result.error || 'Failed to resend OTP');
     }
   };
 
@@ -57,16 +92,17 @@ const AuthScreens: React.FC<AuthScreensProps> = ({ onLoginSuccess }) => {
       return;
     }
     setLoading(true);
-    const result = await verifyOtp(phone, otp);
+    const result = await verifyOtp(phone, otp, 'owner');
     setLoading(false);
 
     if (result.success) {
-      if (result.user) {
-        // User exists, log them in
+      if (authMode === 'login' && result.user) {
         onLoginSuccess(result.user.id, result.user.name);
-      } else {
-        // New user, go to signup
+      } else if (authMode === 'signup' && !result.user) {
         setStep('signup');
+      } else {
+        Alert.alert('Error', 'Authentication flow mismatch. Please try again.');
+        setStep('phone');
       }
     } else {
       Alert.alert('Error', result.error || 'Invalid OTP');
@@ -107,9 +143,9 @@ const AuthScreens: React.FC<AuthScreensProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  const renderLogin = () => (
+  const renderPhone = () => (
     <View style={s.card}>
-      <Text style={s.title}>Welcome to GoZo</Text>
+      <Text style={s.title}>{authMode === 'login' ? 'Login to GoZo' : 'Create Account'}</Text>
       <Text style={s.subtitle}>Enter your phone number to continue</Text>
       
       <View style={s.inputWrapper}>
@@ -125,8 +161,20 @@ const AuthScreens: React.FC<AuthScreensProps> = ({ onLoginSuccess }) => {
         />
       </View>
 
-      <TouchableOpacity style={s.btn} onPress={handleLoginSubmit} disabled={loading}>
+      <TouchableOpacity style={s.btn} onPress={handlePhoneSubmit} disabled={loading}>
         {loading ? <ActivityIndicator color="#FFF" /> : <Text style={s.btnText}>Send OTP</Text>}
+      </TouchableOpacity>
+      
+      <TouchableOpacity 
+        onPress={() => {
+          setAuthMode(authMode === 'login' ? 'signup' : 'login');
+          setPhone('');
+        }} 
+        style={{ marginTop: 20 }}
+      >
+        <Text style={s.linkText}>
+          {authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Log in'}
+        </Text>
       </TouchableOpacity>
     </View>
   );
@@ -135,7 +183,6 @@ const AuthScreens: React.FC<AuthScreensProps> = ({ onLoginSuccess }) => {
     <View style={s.card}>
       <Text style={s.title}>Verify Phone</Text>
       <Text style={s.subtitle}>Enter the OTP sent to {phone}</Text>
-      <Text style={{color: '#16A34A', fontSize: 12, marginBottom: 12, textAlign: 'center'}}>Hint: Use 123456</Text>
       
       <View style={s.inputWrapper}>
         <TextInput
@@ -149,11 +196,26 @@ const AuthScreens: React.FC<AuthScreensProps> = ({ onLoginSuccess }) => {
         />
       </View>
 
+      <TouchableOpacity 
+        onPress={handleResendOtp} 
+        disabled={cooldown > 0 || loading} 
+        style={{ marginTop: 12, marginBottom: 12 }}
+      >
+        <Text style={{
+          color: cooldown > 0 ? '#9CA3AF' : '#10B981', 
+          fontSize: 14, 
+          fontWeight: '700', 
+          textAlign: 'center'
+        }}>
+          {cooldown > 0 ? `Resend OTP in ${cooldown}s` : 'Resend OTP'}
+        </Text>
+      </TouchableOpacity>
+
       <TouchableOpacity style={s.btn} onPress={handleOtpSubmit} disabled={loading}>
         {loading ? <ActivityIndicator color="#FFF" /> : <Text style={s.btnText}>Verify</Text>}
       </TouchableOpacity>
       
-      <TouchableOpacity onPress={() => setStep('login')} style={{ marginTop: 16 }}>
+      <TouchableOpacity onPress={() => setStep('phone')} style={{ marginTop: 16 }}>
         <Text style={s.linkText}>Change Phone Number</Text>
       </TouchableOpacity>
     </View>
@@ -218,36 +280,45 @@ const AuthScreens: React.FC<AuthScreensProps> = ({ onLoginSuccess }) => {
 
   return (
     <SafeAreaView style={s.container}>
-      <View style={s.logoContainer}>
-        <Text style={s.logoText}>GoZo</Text>
-        <Text style={s.logoSub}>Enterprise Logistics</Text>
-      </View>
-      
-      {step === 'login' && renderLogin()}
-      {step === 'otp' && renderOtp()}
-      {step === 'signup' && renderSignup()}
+      <ScrollView contentContainerStyle={s.scrollContainer} showsVerticalScrollIndicator={false}>
+        <View style={s.logoContainer}>
+          <Text style={s.logoText}>Go<Text style={{ color: '#10B981' }}>Zo</Text></Text>
+          <Text style={s.logoSub}>Enterprise Logistics</Text>
+        </View>
+        
+        {step === 'phone' && renderPhone()}
+        {step === 'otp' && renderOtp()}
+        {step === 'signup' && renderSignup()}
+      </ScrollView>
     </SafeAreaView>
   );
 };
 
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#1A56DB' },
-  logoContainer: { alignItems: 'center', marginTop: 60, marginBottom: 40 },
-  logoText: { fontSize: 42, fontWeight: '800', color: '#FFF', letterSpacing: 1 },
-  logoSub: { fontSize: 14, color: '#DBEAFE', marginTop: 4, textTransform: 'uppercase', letterSpacing: 2 },
-  card: { backgroundColor: '#FFF', marginHorizontal: 20, borderRadius: 24, padding: 24, elevation: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 12 },
-  title: { fontSize: 24, fontWeight: '800', color: '#111827', textAlign: 'center' },
-  subtitle: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 8, marginBottom: 24 },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
+  scrollContainer: { flexGrow: 1, paddingBottom: 40, justifyContent: 'center' },
+
+  logoContainer: { alignItems: 'center', marginBottom: 30 },
+  logoText: { fontSize: 48, fontWeight: '900', color: '#1A1A1A', letterSpacing: -1 },
+  logoSub: { fontSize: 11, color: '#6B6B6B', marginTop: 4, textTransform: 'uppercase', letterSpacing: 3, fontWeight: '700' },
+  
+  card: { backgroundColor: '#FFFFFF', marginHorizontal: 20, borderRadius: 12, padding: 24, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 8, borderWidth: 1, borderColor: '#F2F2F2' },
+  title: { fontSize: 22, fontWeight: '800', color: '#1A1A1A', textAlign: 'center', marginBottom: 6 },
+  subtitle: { fontSize: 14, color: '#6B6B6B', textAlign: 'center', marginBottom: 24, lineHeight: 20 },
+  
   field: { marginBottom: 16 },
-  label: { fontSize: 13, fontWeight: '700', color: '#374151', marginBottom: 6, marginLeft: 4 },
-  inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', borderRadius: 14, paddingHorizontal: 16, borderWidth: 1, borderColor: '#E5E7EB' },
-  prefix: { fontSize: 16, fontWeight: '700', color: '#4B5563', marginRight: 8, borderRightWidth: 1, borderRightColor: '#D1D5DB', paddingRight: 8 },
-  input: { flex: 1, height: 56, fontSize: 16, color: '#111827' },
-  btn: { backgroundColor: '#1A56DB', borderRadius: 14, height: 56, justifyContent: 'center', alignItems: 'center', elevation: 2 },
-  btnText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
-  linkText: { color: '#1A56DB', fontSize: 14, fontWeight: '600', textAlign: 'center' },
-  locationBtn: { backgroundColor: '#F3F4F6', borderRadius: 14, minHeight: 56, paddingHorizontal: 16, justifyContent: 'center', borderWidth: 1, borderColor: '#E5E7EB' },
-  locationBtnText: { color: '#111827', fontSize: 15 },
+  label: { fontSize: 12, fontWeight: '700', color: '#6B6B6B', marginBottom: 6, marginLeft: 4, textTransform: 'uppercase', letterSpacing: 0.5 },
+  inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 12, paddingHorizontal: 16, borderWidth: 1, borderColor: '#E2E8F0' },
+  prefix: { fontSize: 16, fontWeight: '700', color: '#6B6B6B', marginRight: 12, borderRightWidth: 1, borderRightColor: '#E2E8F0', paddingRight: 12 },
+  input: { flex: 1, height: 50, fontSize: 16, color: '#1A1A1A', fontWeight: '500' },
+  
+  btn: { backgroundColor: '#10B981', borderRadius: 28, height: 56, justifyContent: 'center', alignItems: 'center', marginTop: 10 },
+  btnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', letterSpacing: 0.5 },
+  linkText: { color: '#10B981', fontSize: 14, fontWeight: '600', textAlign: 'center' },
+  
+  locationBtn: { backgroundColor: '#FFFFFF', borderRadius: 12, minHeight: 50, paddingHorizontal: 16, justifyContent: 'center', borderWidth: 1, borderColor: '#E2E8F0' },
+  locationBtnText: { color: '#6B6B6B', fontSize: 14, fontWeight: '500' },
 });
 
 export default AuthScreens;
+

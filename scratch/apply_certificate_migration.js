@@ -1,0 +1,83 @@
+const fs = require('fs');
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../backend/.env') });
+const https = require('https');
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
+  process.exit(1);
+}
+const projectRef = new URL(SUPABASE_URL).hostname.split('.')[0];
+
+const sql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/004_goods_certificates.sql'), 'utf8');
+
+const postData = JSON.stringify({ query: sql });
+
+const rpcOptions = {
+  hostname: `${projectRef}.supabase.co`,
+  path: '/rest/v1/rpc/exec_sql',
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'apikey': SUPABASE_KEY,
+    'Authorization': `Bearer ${SUPABASE_KEY}`,
+    'Content-Length': Buffer.byteLength(postData),
+  },
+};
+
+const pgMetaOptions = {
+  hostname: `${projectRef}.supabase.co`,
+  path: '/pg/query',
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'apikey': SUPABASE_KEY,
+    'Authorization': `Bearer ${SUPABASE_KEY}`,
+    'Content-Length': Buffer.byteLength(postData),
+  },
+};
+
+function makeRequest(opts, data) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(opts, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+async function run() {
+  console.log('Trying /pg/query...');
+  try {
+    const res = await makeRequest(pgMetaOptions, postData);
+    console.log(`Status: ${res.status}`);
+    console.log(`Response: ${res.body}`);
+    if (res.status === 200 || res.status === 201) {
+      console.log('SUCCESS');
+      return;
+    }
+  } catch (e) {
+    console.error('pg query failed:', e.message);
+  }
+
+  console.log('Trying /rest/v1/rpc/exec_sql...');
+  try {
+    const res = await makeRequest(rpcOptions, postData);
+    console.log(`Status: ${res.status}`);
+    console.log(`Response: ${res.body}`);
+    if (res.status === 200 || res.status === 201) {
+      console.log('SUCCESS');
+      return;
+    }
+  } catch (e) {
+    console.error('exec_sql failed:', e.message);
+  }
+}
+
+run();

@@ -110,7 +110,7 @@ const AddressInput = ({ placeholder, value, onChangeText, dotColor, showLocation
           onChangeText={handleChangeText}
           onFocus={() => { if (suggestions.length > 0) setShowDropdown(true); }}
         />
-        {isSearching && <ActivityIndicator size="small" color="#1A56DB" style={{ marginRight: 10 }} />}
+        {isSearching && <ActivityIndicator size="small" color="#10B981" style={{ marginRight: 10 }} />}
       </View>
       
       {(showLocationButton || onPickFromMap) && (
@@ -119,7 +119,7 @@ const AddressInput = ({ placeholder, value, onChangeText, dotColor, showLocation
             <TouchableOpacity style={styles.gpsBtn} onPress={getLiveLocation} disabled={isFetchingLocation}>
               {isFetchingLocation ? (
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <ActivityIndicator size="small" color="#1A56DB" style={{ marginRight: 6 }} />
+                  <ActivityIndicator size="small" color="#10B981" style={{ marginRight: 6 }} />
                   <Text style={styles.gpsBtnText}>Fetching...</Text>
                 </View>
               ) : (
@@ -157,21 +157,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    borderWidth: 1.5,
+    borderRadius: 12,
+    borderWidth: 1,
     borderColor: '#E2E8F0',
     paddingHorizontal: 14,
-    paddingVertical: 4,
+    paddingVertical: 2,
   },
   dot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
   input: {
     flex: 1,
     fontSize: 15,
-    color: '#0F172A',
+    color: '#1A1A1A',
     paddingVertical: 12,
     marginLeft: 12,
   },
@@ -179,44 +179,44 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    marginTop: 6,
+    marginTop: 8,
   },
   gpsBtn: {
-    backgroundColor: '#EBF0FF',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderWidth: 1,
-    borderColor: '#C7D7FE',
-  },
-  gpsBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1A56DB',
-  },
-  mapPickBtn: {
-    backgroundColor: '#ECFDF5',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    backgroundColor: '#E6F7F0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderWidth: 1,
     borderColor: '#A7F3D0',
   },
-  mapPickBtnText: {
-    fontSize: 13,
+  gpsBtnText: {
+    fontSize: 12,
     fontWeight: '600',
-    color: '#059669',
+    color: '#10B981',
+  },
+  mapPickBtn: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#10B981',
+  },
+  mapPickBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#10B981',
   },
   dropdown: {
     marginTop: 4,
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#F1F5F9',
-    elevation: 6,
-    shadowColor: '#1A3B6D',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.1,
+    borderColor: '#E2E8F0',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
     shadowRadius: 8,
     maxHeight: 200,
     position: 'absolute',
@@ -226,15 +226,16 @@ const styles = StyleSheet.create({
     zIndex: 20,
   },
   suggestionItem: {
-    padding: 13,
+    padding: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#F8FAFC',
+    borderBottomColor: '#F5F5F5',
   },
   suggestionText: {
     fontSize: 14,
-    color: '#334155',
+    color: '#1A1A1A',
     fontWeight: '500',
   },
 });
 
 export default AddressInput;
+

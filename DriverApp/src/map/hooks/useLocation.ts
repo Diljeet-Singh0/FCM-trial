@@ -2,6 +2,7 @@ import {useState, useEffect, useRef, useCallback} from 'react';
 import {PermissionsAndroid, Platform} from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
 import {Coordinate, LocationData} from '../types';
+import {haversineDistance} from '../utils/geo';
 
 interface UseLocationResult {
   currentLocation: Coordinate | null;
@@ -23,6 +24,14 @@ export const useLocation = (): UseLocationResult => {
   const [locationError, setLocationError] = useState<string | null>(null);
   const [hasPermission, setHasPermission] = useState(false);
   const watchIdRef = useRef<number | null>(null);
+
+  // GPS jitter filtering refs
+  const lastAcceptedRef = useRef<Coordinate | null>(null);
+  const smoothedRef = useRef<Coordinate | null>(null);
+  const GPS_ACCURACY_MAX = 30;
+  const STATIONARY_SPEED_MAX = 0.5; // m/s
+  const STATIONARY_DIST_MIN = 0.008; // km (~8m)
+  const SMOOTH_FACTOR = 0.35;
 
   const requestPermission = useCallback(async (): Promise<boolean> => {
     if (Platform.OS === 'android') {
@@ -73,6 +82,8 @@ export const useLocation = (): UseLocationResult => {
           timestamp: position.timestamp,
         });
         setLocationError(null);
+        lastAcceptedRef.current = coord;
+        smoothedRef.current = coord;
       },
       error => {
         console.error('Location error:', error);
@@ -91,18 +102,52 @@ export const useLocation = (): UseLocationResult => {
 
     watchIdRef.current = Geolocation.watchPosition(
       position => {
-        const coord: Coordinate = {
+        const rawCoord: Coordinate = {
           longitude: position.coords.longitude,
           latitude: position.coords.latitude,
         };
-        setCurrentLocation(coord);
+        const accuracy = position.coords.accuracy || 0;
+        const spd = position.coords.speed || 0;
+
+        // Filter 1: reject low-accuracy readings when we have a good fix
+        if (accuracy > GPS_ACCURACY_MAX && lastAcceptedRef.current) {
+          return;
+        }
+
+        // Filter 2: suppress micro-movements when stationary
+        if (lastAcceptedRef.current && spd < STATIONARY_SPEED_MAX) {
+          const movedKm = haversineDistance(lastAcceptedRef.current, rawCoord);
+          if (movedKm < STATIONARY_DIST_MIN) {
+            return;
+          }
+        }
+
+        // Filter 3: exponential smoothing
+        let smoothed: Coordinate;
+        if (smoothedRef.current) {
+          smoothed = {
+            longitude:
+              smoothedRef.current.longitude * (1 - SMOOTH_FACTOR) +
+              rawCoord.longitude * SMOOTH_FACTOR,
+            latitude:
+              smoothedRef.current.latitude * (1 - SMOOTH_FACTOR) +
+              rawCoord.latitude * SMOOTH_FACTOR,
+          };
+        } else {
+          smoothed = rawCoord;
+        }
+
+        smoothedRef.current = smoothed;
+        lastAcceptedRef.current = smoothed;
+
+        setCurrentLocation(smoothed);
         setHeading(position.coords.heading || 0);
-        setSpeed(position.coords.speed || 0);
+        setSpeed(spd);
         setLocationData({
-          ...coord,
+          ...smoothed,
           heading: position.coords.heading || 0,
-          speed: position.coords.speed || 0,
-          accuracy: position.coords.accuracy || 0,
+          speed: spd,
+          accuracy,
           timestamp: position.timestamp,
         });
       },
@@ -112,9 +157,9 @@ export const useLocation = (): UseLocationResult => {
       },
       {
         enableHighAccuracy: true,
-        distanceFilter: 5,
-        interval: 1000,
-        fastestInterval: 500,
+        distanceFilter: 10,
+        interval: 2000,
+        fastestInterval: 1000,
       },
     );
   }, []);

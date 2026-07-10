@@ -9,14 +9,22 @@ import {
   calculateProgress,
   findNearestPointOnRoute,
 } from '../utils/geo';
-import {STEP_SNAP_THRESHOLD_KM, ARRIVAL_THRESHOLD_KM} from '../constants';
+import {fetchRoute} from '../utils/mapbox';
+import {
+  STEP_SNAP_THRESHOLD_KM,
+  ARRIVAL_THRESHOLD_KM,
+  OFF_ROUTE_THRESHOLD_KM,
+  REROUTE_COOLDOWN_MS,
+  OFF_ROUTE_CONFIRM_COUNT,
+} from '../constants';
 
 interface UseNavigationResult {
   navigationState: NavigationState;
   liveLocation: Coordinate | null;
   liveBearing: number;
   tripStats: TripStats | null;
-  startNavigation: (route: Route) => void;
+  activeRoute: Route | null;
+  startNavigation: (route: Route, destination: Coordinate) => void;
   stopNavigation: () => void;
   isActive: boolean;
 }
@@ -33,6 +41,8 @@ const initialState: NavigationState = {
   streetName: '',
   progress: 0,
   eta: new Date(),
+  isOffRoute: false,
+  isRerouting: false,
 };
 
 export const useNavigation = (): UseNavigationResult => {
@@ -41,14 +51,29 @@ export const useNavigation = (): UseNavigationResult => {
   const [liveBearing, setLiveBearing] = useState(0);
   const [tripStats, setTripStats] = useState<TripStats | null>(null);
   const [isActive, setIsActive] = useState(false);
+  const [activeRoute, setActiveRoute] = useState<Route | null>(null);
 
   const watchIdRef = useRef<number | null>(null);
   const routeRef = useRef<Route | null>(null);
+  const destinationRef = useRef<Coordinate | null>(null);
   const stepIndexRef = useRef(0);
   const startTimeRef = useRef<Date>(new Date());
   const isActiveRef = useRef(false);
   const lastLocationRef = useRef<Coordinate | null>(null);
   const distanceTraveledRef = useRef(0);
+
+  // Off-route detection refs
+  const offRouteCountRef = useRef(0);
+  const lastRerouteTimeRef = useRef(0);
+  const isReroutingRef = useRef(false);
+
+  // GPS jitter filtering refs
+  const lastAcceptedLocationRef = useRef<Coordinate | null>(null);
+  const smoothedLocationRef = useRef<Coordinate | null>(null);
+  const GPS_ACCURACY_THRESHOLD = 30; // Ignore readings with accuracy worse than 30m
+  const STATIONARY_SPEED_THRESHOLD = 0.5; // m/s — below this, consider stationary
+  const STATIONARY_DISTANCE_THRESHOLD = 0.008; // 8 meters in km — ignore micro-movements when stationary
+  const SMOOTHING_FACTOR = 0.35; // Exponential smoothing: 0 = full old, 1 = full new
 
   const cleanup = useCallback(() => {
     if (watchIdRef.current !== null) {
@@ -61,10 +86,76 @@ export const useNavigation = (): UseNavigationResult => {
     return cleanup;
   }, [cleanup]);
 
+  // ─── Reroute from current position to destination ───
+  const performReroute = useCallback(
+    async (currentCoord: Coordinate) => {
+      if (isReroutingRef.current || !destinationRef.current || !isActiveRef.current) {
+        return;
+      }
+
+      // Enforce cooldown
+      const now = Date.now();
+      if (now - lastRerouteTimeRef.current < REROUTE_COOLDOWN_MS) {
+        return;
+      }
+
+      isReroutingRef.current = true;
+      lastRerouteTimeRef.current = now;
+
+      setNavigationState(prev => ({
+        ...prev,
+        isRerouting: true,
+        isOffRoute: true,
+        nextInstruction: 'Rerouting...',
+      }));
+
+      try {
+        const newRoute = await fetchRoute(currentCoord, destinationRef.current);
+
+        if (newRoute && isActiveRef.current) {
+          // Update refs and state with the new route
+          routeRef.current = newRoute;
+          stepIndexRef.current = 0;
+          offRouteCountRef.current = 0;
+
+          setActiveRoute(newRoute);
+
+          // Set fresh navigation state from the new route
+          const firstStep = newRoute.steps[0];
+          setNavigationState({
+            mode: NavigationMode.NAVIGATING,
+            currentStepIndex: 0,
+            distanceToNextManeuver: 0,
+            remainingDistance: newRoute.distance,
+            remainingDuration: newRoute.duration,
+            nextInstruction: firstStep?.maneuver?.instruction || 'Continue on the route',
+            nextManeuverType: firstStep?.maneuver?.type || 'depart',
+            nextManeuverModifier: firstStep?.maneuver?.modifier,
+            streetName: firstStep?.name || '',
+            progress: 0,
+            eta: new Date(Date.now() + newRoute.duration * 1000),
+            isOffRoute: false,
+            isRerouting: false,
+          });
+        }
+      } catch (error) {
+        console.error('Reroute failed:', error);
+        // Reset rerouting state so we can try again
+        setNavigationState(prev => ({
+          ...prev,
+          isRerouting: false,
+        }));
+      } finally {
+        isReroutingRef.current = false;
+      }
+    },
+    [],
+  );
+
   const updateNavigationState = useCallback(
     (coord: Coordinate, route: Route) => {
       // Find nearest point on route to snap the user
-      const {index: nearestIndex} = findNearestPointOnRoute(coord, route.coordinates);
+      const {index: nearestIndex, distance: distFromRoute} = findNearestPointOnRoute(coord, route.coordinates);
       const totalPoints = route.coordinates.length;
       const progress = calculateProgress(nearestIndex, totalPoints);
       const remainingDist = calculateRemainingDistance(nearestIndex, route.coordinates);
@@ -81,6 +172,26 @@ export const useNavigation = (): UseNavigationResult => {
         }
       }
       lastLocationRef.current = coord;
+
+      // ─── Off-Route Detection ───
+      if (distFromRoute > OFF_ROUTE_THRESHOLD_KM) {
+        offRouteCountRef.current += 1;
+
+        if (offRouteCountRef.current >= OFF_ROUTE_CONFIRM_COUNT && !isReroutingRef.current) {
+          // Driver is confirmed off-route — trigger reroute
+          performReroute(coord);
+          return; // Don't update state further — reroute will set fresh state
+        }
+
+        // Show off-route warning while accumulating confirmations
+        setNavigationState(prev => ({
+          ...prev,
+          isOffRoute: true,
+        }));
+      } else {
+        // Back on route — reset counter
+        offRouteCountRef.current = 0;
+      }
 
       // Find current step based on proximity to maneuver points
       let currentStepIdx = stepIndexRef.current;
@@ -135,6 +246,8 @@ export const useNavigation = (): UseNavigationResult => {
           remainingDuration: 0,
           nextInstruction: 'You have arrived at your destination',
           nextManeuverType: 'arrive',
+          isOffRoute: false,
+          isRerouting: false,
         }));
 
         cleanup();
@@ -155,23 +268,32 @@ export const useNavigation = (): UseNavigationResult => {
         streetName: currentStep.name || '',
         progress,
         eta: new Date(Date.now() + remainingDuration * 1000),
+        isOffRoute: distFromRoute > OFF_ROUTE_THRESHOLD_KM,
+        isRerouting: false,
       });
     },
-    [cleanup],
+    [cleanup, performReroute],
   );
 
   const startNavigation = useCallback(
-    (route: Route) => {
+    (route: Route, destination: Coordinate) => {
       cleanup();
       routeRef.current = route;
+      destinationRef.current = destination;
       stepIndexRef.current = 0;
       startTimeRef.current = new Date();
       isActiveRef.current = true;
       lastLocationRef.current = null;
       distanceTraveledRef.current = 0;
+      offRouteCountRef.current = 0;
+      lastRerouteTimeRef.current = 0;
+      isReroutingRef.current = false;
+      lastAcceptedLocationRef.current = null;
+      smoothedLocationRef.current = null;
 
       setIsActive(true);
       setTripStats(null);
+      setActiveRoute(route);
 
       // Set initial state
       const firstStep = route.steps[0];
@@ -187,6 +309,8 @@ export const useNavigation = (): UseNavigationResult => {
         streetName: firstStep?.name || '',
         progress: 0,
         eta: new Date(Date.now() + route.duration * 1000),
+        isOffRoute: false,
+        isRerouting: false,
       });
 
       // Start watching real GPS location
@@ -194,28 +318,63 @@ export const useNavigation = (): UseNavigationResult => {
         position => {
           if (!isActiveRef.current || !routeRef.current) return;
 
-          const coord: Coordinate = {
+          const rawCoord: Coordinate = {
             longitude: position.coords.longitude,
             latitude: position.coords.latitude,
           };
+          const accuracy = position.coords.accuracy || 0;
+          const speed = position.coords.speed || 0;
 
-          setLiveLocation(coord);
+          // ─── Filter 1: Reject low-accuracy readings ───
+          if (accuracy > GPS_ACCURACY_THRESHOLD && lastAcceptedLocationRef.current) {
+            // Keep the last known good location instead
+            return;
+          }
+
+          // ─── Filter 2: Suppress micro-movements when stationary ───
+          if (lastAcceptedLocationRef.current && speed < STATIONARY_SPEED_THRESHOLD) {
+            const movedDist = haversineDistance(lastAcceptedLocationRef.current, rawCoord);
+            if (movedDist < STATIONARY_DISTANCE_THRESHOLD) {
+              // Driver hasn't really moved — skip this update
+              return;
+            }
+          }
+
+          // ─── Filter 3: Exponential smoothing ───
+          let smoothed: Coordinate;
+          if (smoothedLocationRef.current) {
+            smoothed = {
+              longitude:
+                smoothedLocationRef.current.longitude * (1 - SMOOTHING_FACTOR) +
+                rawCoord.longitude * SMOOTHING_FACTOR,
+              latitude:
+                smoothedLocationRef.current.latitude * (1 - SMOOTHING_FACTOR) +
+                rawCoord.latitude * SMOOTHING_FACTOR,
+            };
+          } else {
+            smoothed = rawCoord;
+          }
+
+          smoothedLocationRef.current = smoothed;
+          lastAcceptedLocationRef.current = smoothed;
+
+          setLiveLocation(smoothed);
 
           // Use device heading if available, otherwise calculate from route
           if (position.coords.heading && position.coords.heading >= 0) {
             setLiveBearing(position.coords.heading);
           }
 
-          updateNavigationState(coord, routeRef.current);
+          updateNavigationState(smoothed, routeRef.current);
         },
         error => {
           console.error('Navigation GPS error:', error);
         },
         {
           enableHighAccuracy: true,
-          distanceFilter: 5, // Update every 5 meters of movement
-          interval: 1000, // Android: check every 1 second
-          fastestInterval: 500, // Android: fastest update 500ms
+          distanceFilter: 10, // Only fire when moved 10m (was 5m, too sensitive)
+          interval: 2000, // Android: check every 2 seconds (was 1s)
+          fastestInterval: 1000, // Android: fastest update 1s (was 500ms)
           showsBackgroundLocationIndicator: true,
         },
       );
@@ -226,10 +385,13 @@ export const useNavigation = (): UseNavigationResult => {
   const stopNavigation = useCallback(() => {
     cleanup();
     isActiveRef.current = false;
+    isReroutingRef.current = false;
+    offRouteCountRef.current = 0;
     setIsActive(false);
     setNavigationState(initialState);
     setLiveLocation(null);
     setLiveBearing(0);
+    setActiveRoute(null);
   }, [cleanup]);
 
   return {
@@ -237,6 +399,7 @@ export const useNavigation = (): UseNavigationResult => {
     liveLocation,
     liveBearing,
     tripStats,
+    activeRoute,
     startNavigation,
     stopNavigation,
     isActive,

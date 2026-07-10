@@ -23,6 +23,7 @@ const NavigationScreen: React.FC = () => {
     liveLocation,
     liveBearing,
     tripStats,
+    activeRoute,
     startNavigation,
     stopNavigation,
     isActive,
@@ -30,7 +31,7 @@ const NavigationScreen: React.FC = () => {
 
   useEffect(() => {
     if (route) {
-      startNavigation(route);
+      startNavigation(route, destinationCoords);
     }
     return () => {
       stopNavigation();
@@ -51,6 +52,9 @@ const NavigationScreen: React.FC = () => {
   const eta = calculateETA(navigationState.remainingDuration);
   const isArrived = navigationState.mode === NavigationMode.ARRIVED;
 
+  // Use the activeRoute (which updates on reroute) or fall back to original route
+  const displayRoute = activeRoute || route;
+
   return (
     <View style={styles.container}>
       <StatusBar
@@ -65,7 +69,7 @@ const NavigationScreen: React.FC = () => {
         simulatedBearing={liveBearing}
         sourceCoords={sourceCoords}
         destinationCoords={destinationCoords}
-        route={route}
+        route={displayRoute}
         navigationMode={NavigationMode.NAVIGATING}
       />
 

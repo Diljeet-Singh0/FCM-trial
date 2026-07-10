@@ -91,6 +91,8 @@ export interface NavigationState {
   streetName: string;
   progress: number; // 0..1
   eta: Date;
+  isOffRoute: boolean;
+  isRerouting: boolean;
 }
 
 export interface TripStats {

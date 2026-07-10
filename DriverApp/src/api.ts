@@ -35,12 +35,12 @@ export const registerUser = async (
   }
 };
 
-export const loginUser = async (phone: string) => {
+export const loginUser = async (phone: string, expectedRole?: string) => {
   try {
     const response = await fetch(`${API_BASE_URL}/gozo/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone }),
+      body: JSON.stringify({ phone, expectedRole }),
     });
     return await response.json();
   } catch (error: any) {
@@ -48,12 +48,12 @@ export const loginUser = async (phone: string) => {
   }
 };
 
-export const verifyOtp = async (phone: string, otp: string) => {
+export const verifyOtp = async (phone: string, otp: string, expectedRole?: string) => {
   try {
     const response = await fetch(`${API_BASE_URL}/gozo/auth/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, otp }),
+      body: JSON.stringify({ phone, otp, expectedRole }),
     });
     return await response.json();
   } catch (error: any) {
@@ -182,4 +182,146 @@ export const fetchDriverHistory = async (transporterId: string) => {
     return { success: false, requests: [], error: error.message };
   }
 };
+
+export const updateDriverStatus = async (
+  driverId: string,
+  online: boolean,
+  latitude?: number,
+  longitude?: number,
+) => {
+  try {
+    const body: any = { driverId, online };
+    if (typeof latitude === 'number' && typeof longitude === 'number') {
+      body.latitude = latitude;
+      body.longitude = longitude;
+    }
+    const response = await fetch(`${API_BASE_URL}/gozo/driver-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    return { success: data.success, error: data.error };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const updateDriverDbStatus = async (
+  driverId: string,
+  status: 'offline' | 'available' | 'in_ride',
+) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/drivers/${driverId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    const data = await response.json();
+    return { success: data.success, error: data.error };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+export const fetchUserProfile = async (userId: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/user/${userId}`);
+    const data = await response.json();
+    return { success: data.success, user: data.user ?? null, error: data.error };
+  } catch (error: any) {
+    return { success: false, user: null, error: error.message };
+  }
+};
+
+export const fetchRequestDetails = async (requestId: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/request-details/${requestId}`);
+    const data = await response.json();
+    return { success: data.success, request: data.request ?? null, error: data.error };
+  } catch (error: any) {
+    return { success: false, request: null, error: error.message };
+  }
+};
+
+export const fetchDriverStats = async (transporterId: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/gozo/driver-stats/${transporterId}`);
+    const data = await response.json();
+    return {
+      success: data.success,
+      stats: data.stats ?? { totalTrips: 0, completedTrips: 0, totalEarned: 0, avgRating: null },
+      error: data.error,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      stats: { totalTrips: 0, completedTrips: 0, totalEarned: 0, avgRating: null },
+      error: error.message,
+    };
+  }
+};
+
+export const fetchDriverScheduledRides = async (driverId: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/scheduled-rides/driver/${driverId}`);
+    const data = await response.json();
+    return { success: data.success, rides: data.rides ?? [], error: data.error };
+  } catch (error: any) {
+    return { success: false, rides: [], error: error.message };
+  }
+};
+
+export const fetchScheduledRideDetail = async (rideId: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/scheduled-rides/${rideId}`);
+    const data = await response.json();
+    return { success: data.success, ride: data.ride ?? null, error: data.error };
+  } catch (error: any) {
+    return { success: false, ride: null, error: error.message };
+  }
+};
+
+export const startScheduledRide = async (rideId: string, driverId: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/scheduled-rides/${rideId}/start`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ driver_id: driverId }),
+    });
+    const data = await response.json();
+    return { success: data.success, ride: data.ride ?? null, error: data.error };
+  } catch (error: any) {
+    return { success: false, ride: null, error: error.message };
+  }
+};
+
+export const cancelScheduledRide = async (rideId: string, cancelledBy: 'user' | 'driver' | 'admin', reason?: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/scheduled-rides/${rideId}/cancel`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cancelled_by: cancelledBy, cancellation_reason: reason }),
+    });
+    const data = await response.json();
+    return { success: data.success, ride: data.ride ?? null, error: data.error };
+  } catch (error: any) {
+    return { success: false, ride: null, error: error.message };
+  }
+};
+
+export const updateScheduledRideStatus = async (rideId: string, driverId: string, status: 'arrived' | 'picked_up' | 'delivered') => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/scheduled-rides/${rideId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ driver_id: driverId, status }),
+    });
+    const data = await response.json();
+    return { success: data.success, ride: data.ride ?? null, error: data.error };
+  } catch (error: any) {
+    return { success: false, ride: null, error: error.message };
+  }
+};
+
 
