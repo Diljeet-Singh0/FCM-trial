@@ -225,6 +225,69 @@ export const assignDriverToScheduledRide = async (rideId: string, driverId: stri
   }
 };
 
+// DELETE /admin/rides/:rideId
+export const deleteRide = async (rideId: string): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/admin/rides/${rideId}`, {
+      method: 'DELETE',
+      headers,
+    });
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      const data = await response.json();
+      return { success: data.success, error: data.error };
+    } else {
+      const text = await response.text();
+      return { success: false, error: `Server error (${response.status}): ${text.substring(0, 100)}` };
+    }
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+// DELETE /admin/scheduled-rides/:rideId
+export const deleteScheduledRide = async (rideId: string): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/admin/scheduled-rides/${rideId}`, {
+      method: 'DELETE',
+      headers,
+    });
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      const data = await response.json();
+      return { success: data.success, error: data.error };
+    } else {
+      const text = await response.text();
+      return { success: false, error: `Server error (${response.status}): ${text.substring(0, 100)}` };
+    }
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+// DELETE /admin/rides/clear-all
+export const clearAllRides = async (): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/admin/rides/clear-all`, {
+      method: 'DELETE',
+      headers,
+    });
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      const data = await response.json();
+      return { success: data.success, error: data.error };
+    } else {
+      const text = await response.text();
+      return { success: false, error: `Server error (${response.status}): ${text.substring(0, 100)}` };
+    }
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
 // Send a test notification
 export const triggerTestNotification = async (): Promise<{ success: boolean; error?: string }> => {
   try {

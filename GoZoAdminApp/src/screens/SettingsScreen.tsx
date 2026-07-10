@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, BORDER_RADIUS, SPACING } from '../theme';
-import { triggerTestNotification } from '../api';
+import { triggerTestNotification, clearAllRides } from '../api';
 
 interface SettingsScreenProps {
   onLogout: () => void;
@@ -19,6 +19,7 @@ interface SettingsScreenProps {
 
 export default function SettingsScreen({ onLogout }: SettingsScreenProps) {
   const [testingNotification, setTestingNotification] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
 
   const handleTestNotification = async () => {
     setTestingNotification(true);
@@ -37,6 +38,49 @@ export default function SettingsScreen({ onLogout }: SettingsScreenProps) {
     } finally {
       setTestingNotification(false);
     }
+  };
+
+  const handleClearAll = () => {
+    Alert.alert(
+      '⚠️ Delete ALL Rides',
+      'This will permanently delete EVERY ride (normal and scheduled) from the database. This action CANNOT be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'I Understand, Delete All',
+          style: 'destructive',
+          onPress: () => {
+            // Second confirmation
+            Alert.alert(
+              'Final Confirmation',
+              'Are you absolutely sure? All ride records will be erased forever.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete Everything',
+                  style: 'destructive',
+                  onPress: async () => {
+                    setClearingAll(true);
+                    try {
+                      const res = await clearAllRides();
+                      if (res.success) {
+                        Alert.alert('Done', 'All rides have been permanently deleted.');
+                      } else {
+                        Alert.alert('Error', res.error || 'Failed to delete all rides.');
+                      }
+                    } catch (err: any) {
+                      Alert.alert('Error', err.message || 'Connection failed.');
+                    } finally {
+                      setClearingAll(false);
+                    }
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
   };
 
   const handleLogout = () => {
@@ -111,6 +155,25 @@ export default function SettingsScreen({ onLogout }: SettingsScreenProps) {
             <Text style={styles.infoLabel}>Framework</Text>
             <Text style={styles.infoValue}>React Native CLI</Text>
           </View>
+        </View>
+
+        {/* Danger Zone Card */}
+        <View style={styles.card}>
+          <Text style={[styles.sectionTitle, { color: COLORS.cancelled }]}>Danger Zone</Text>
+          <Text style={styles.descText}>
+            Permanently deletes ALL rides (both normal and scheduled) from the database. This action cannot be undone.
+          </Text>
+          <TouchableOpacity
+            style={[styles.dangerBtn, clearingAll && styles.disabledBtn]}
+            onPress={handleClearAll}
+            disabled={clearingAll}
+          >
+            {clearingAll ? (
+              <ActivityIndicator color={COLORS.cancelled} />
+            ) : (
+              <Text style={styles.dangerBtnText}>🗑  Delete All Rides</Text>
+            )}
+          </TouchableOpacity>
         </View>
 
         {/* Logout Button */}
@@ -209,6 +272,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.white,
     fontWeight: '600',
+  },
+  dangerBtn: {
+    backgroundColor: COLORS.cancelled + '12',
+    borderColor: COLORS.cancelled,
+    borderWidth: 1,
+    borderRadius: BORDER_RADIUS.md,
+    height: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dangerBtnText: {
+    color: COLORS.cancelled,
+    fontWeight: '800',
+    fontSize: 15,
   },
   logoutBtn: {
     backgroundColor: COLORS.cancelled + '15',

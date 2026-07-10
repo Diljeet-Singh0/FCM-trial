@@ -17,6 +17,7 @@ import {
   fetchScheduledRideDetail,
   assignDriverToScheduledRide,
   fetchDriversWithStatus,
+  deleteScheduledRide,
   ScheduledRide,
   Driver,
 } from '../api';
@@ -89,6 +90,34 @@ export default function ScheduledRideDetailScreen({ route, navigation }: any) {
     } finally {
       setAssigning(false);
     }
+  };
+
+  const handleDelete = () => {
+    Alert.alert(
+      'Delete Ride',
+      'Are you sure you want to permanently delete this ride? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const res = await deleteScheduledRide(rideId);
+              if (res.success) {
+                Alert.alert('Success', 'Ride deleted successfully.', [
+                  { text: 'OK', onPress: () => navigation.goBack() }
+                ]);
+              } else {
+                Alert.alert('Error', res.error || 'Failed to delete ride. Please try again.');
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Failed to delete ride. Please try again.');
+            }
+          }
+        }
+      ]
+    );
   };
 
   if (loading) {
@@ -305,6 +334,9 @@ export default function ScheduledRideDetailScreen({ route, navigation }: any) {
             </View>
           )
         )}
+        <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
+          <Text style={styles.deleteButtonText}>Delete Ride</Text>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
@@ -571,6 +603,17 @@ const styles = StyleSheet.create({
   },
   backBtnText: {
     color: COLORS.white,
+    fontWeight: '700',
+  },
+  deleteButton: {
+    marginTop: SPACING.lg,
+    paddingVertical: SPACING.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteButtonText: {
+    color: COLORS.cancelled,
+    fontSize: 16,
     fontWeight: '700',
   },
 });

@@ -9,11 +9,12 @@ import {
   Linking,
   SafeAreaView,
   StatusBar,
+  Alert,
 } from 'react-native';
 import { COLORS, BORDER_RADIUS, SPACING } from '../theme';
 import StatusBadge from '../components/StatusBadge';
 import StatusTimeline from '../components/StatusTimeline';
-import { fetchRideDetail, Ride } from '../api';
+import { fetchRideDetail, Ride, deleteRide } from '../api';
 
 export default function RideDetailScreen({ route, navigation }: any) {
   const { requestId } = route.params;
@@ -46,6 +47,34 @@ export default function RideDetailScreen({ route, navigation }: any) {
     if (phone) {
       Linking.openURL(`tel:${phone}`);
     }
+  };
+
+  const handleDelete = () => {
+    Alert.alert(
+      'Delete Ride',
+      'Are you sure you want to permanently delete this ride? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const res = await deleteRide(requestId);
+              if (res.success) {
+                Alert.alert('Success', 'Ride deleted successfully.', [
+                  { text: 'OK', onPress: () => navigation.goBack() }
+                ]);
+              } else {
+                Alert.alert('Error', res.error || 'Failed to delete ride. Please try again.');
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Failed to delete ride. Please try again.');
+            }
+          }
+        }
+      ]
+    );
   };
 
   if (loading) {
@@ -183,6 +212,10 @@ export default function RideDetailScreen({ route, navigation }: any) {
 
         {/* Status Timeline */}
         <StatusTimeline timeline={ride.timeline} />
+
+        <TouchableOpacity style={styles.deleteButton} onPress={handleDelete}>
+          <Text style={styles.deleteButtonText}>Delete Ride</Text>
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
@@ -374,6 +407,17 @@ const styles = StyleSheet.create({
   },
   backBtnText: {
     color: COLORS.white,
+    fontWeight: '700',
+  },
+  deleteButton: {
+    marginTop: SPACING.lg,
+    paddingVertical: SPACING.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteButtonText: {
+    color: COLORS.cancelled,
+    fontSize: 16,
     fontWeight: '700',
   },
 });

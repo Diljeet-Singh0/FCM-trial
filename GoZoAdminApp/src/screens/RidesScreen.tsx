@@ -59,8 +59,11 @@ export default function RidesScreen({ navigation }: any) {
   };
 
   useEffect(() => {
-    loadRides();
-  }, [selectedFilter, selectedDate]);
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadRides();
+    });
+    return unsubscribe;
+  }, [navigation, selectedFilter, selectedDate]);
 
   return (
     <SafeAreaView style={styles.container}>
