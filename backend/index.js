@@ -98,11 +98,20 @@ const geocodeAddress = async (address) => {
   return null;
 };
 
-// Cancel all pending cascade timers for a request
+// Cancel all pending cascade timers for a request and clear its persisted cascade_state
 const cancelCascade = (requestId) => {
   if (pendingCascades[requestId]) {
     pendingCascades[requestId].forEach((tid) => clearTimeout(tid));
     delete pendingCascades[requestId];
+  }
+  // Persist the cancellation so that on restart we don't re-schedule this request
+  if (supabase) {
+    supabase
+      .from('requests')
+      .update({ cascade_state: null })
+      .eq('id', requestId)
+      .then(() => {})
+      .catch((e) => console.error('[GoZo] cancelCascade DB clear error:', e.message));
   }
 };
 
@@ -703,6 +712,29 @@ app.post('/gozo/create-request', async (req, res) => {
         // ─── Batches 1..N: cascade every BATCH_INTERVAL_MS ───
         pendingCascades[requestRow.id] = [];
 
+        // Build the cascade schedule — persisted to DB for restart recovery
+        const cascadeWaves = [];
+        for (let bIdx = 1; bIdx < batches.length; bIdx++) {
+          cascadeWaves.push({
+            type: 'online_batch',
+            batchIndex: bIdx,
+            fireAtMs: Date.now() + bIdx * BATCH_INTERVAL_MS,
+            driverIds: batches[bIdx].map((d) => d.id),
+          });
+        }
+        if (offlineDrivers.length > 0) {
+          cascadeWaves.push({
+            type: 'offline_fallback',
+            fireAtMs: Date.now() + batches.length * BATCH_INTERVAL_MS,
+            driverIds: offlineDrivers.map((d) => d.id),
+          });
+        }
+        // Persist so restart can recover pending waves
+        await supabase
+          .from('requests')
+          .update({ cascade_state: { waves: cascadeWaves, pickup_address: pickupAddress, goods_type: goodsType, price_inr: predefinedPrice, price_info: priceInfo } })
+          .eq('id', requestRow.id);
+
         for (let bIdx = 1; bIdx < batches.length; bIdx++) {
           const batch = batches[bIdx];
           const delay = bIdx * BATCH_INTERVAL_MS;
@@ -761,6 +793,12 @@ app.post('/gozo/create-request', async (req, res) => {
 
         if (offlineDrivers.length > 0) {
           pendingCascades[requestRow.id] = [];
+          const offlineFallbackAt = Date.now() + BATCH_INTERVAL_MS;
+          // Persist for restart recovery (geocode-failed single-wave case)
+          await supabase
+            .from('requests')
+            .update({ cascade_state: { waves: [{ type: 'offline_fallback', fireAtMs: offlineFallbackAt, driverIds: offlineDrivers.map(d => d.id) }], pickup_address: pickupAddress, goods_type: goodsType, price_inr: predefinedPrice, price_info: priceInfo } })
+            .eq('id', requestRow.id);
           const tid = setTimeout(async () => {
             try {
               const { data: reqCheck } = await supabase
@@ -1763,7 +1801,11 @@ const generateGoodsCertificate = async (tripId) => {
 };
 
 // ─── Trip Status Updates ───
-const VALID_TRIP_STATUSES = ['picked_up', 'on_the_way', 'completed'];
+// NOTE: 'completed' is intentionally excluded here.
+// Completion is owned exclusively by POST /gozo/upload-builty (builty upload).
+// This prevents two code paths from both being able to set status=completed
+// and firing duplicate TRIP_STATUS_UPDATE FCM notifications.
+const VALID_TRIP_STATUSES = ['picked_up', 'on_the_way'];
 
 app.post('/gozo/update-trip-status', async (req, res) => {
   try {
@@ -1809,10 +1851,14 @@ app.post('/gozo/update-trip-status', async (req, res) => {
     const statusMessages = {
       picked_up: { title: '📦 Goods Picked Up', body: 'Driver has picked up your goods!' },
       on_the_way: { title: '🚛 On the Way', body: 'Your goods are on the way to the destination!' },
-      completed: { title: '✅ Delivery Completed', body: 'Your goods have been delivered successfully!' },
+      // NOTE: 'completed' is deliberately absent — completion FCM is sent exclusively by /gozo/upload-builty
     };
 
     const notifInfo = statusMessages[status];
+    if (!notifInfo) {
+      // Safeguard: should never happen now that VALID_TRIP_STATUSES excludes 'completed'
+      return res.status(400).json({ success: false, error: `Status '${status}' cannot be set via this endpoint. Use /gozo/upload-builty to complete a trip.` });
+    }
 
     // Notify the owner
     const { data: ownerRow, error: ownerError } = await supabase
@@ -1834,12 +1880,17 @@ app.post('/gozo/update-trip-status', async (req, res) => {
       });
     }
 
-    // Auto-generate Goods Responsibility Certificate on pickup
+    // ─── Issue 2: Certificate timing is intentionally at picked_up, not completion ───
+    // At pickup the driver takes physical custody of the goods. The certificate
+    // captures a "custody snapshot" (driver, vehicle, goods, pickup location/time)
+    // at the moment responsibility transfers from the factory to the transporter.
+    // Moving it to completion would mean the certificate is only issued after
+    // the builty is uploaded, which is too late for a goods-in-transit document.
     if (status === 'picked_up') {
       try {
         const cert = await generateGoodsCertificate(requestId);
         if (cert) {
-          console.log(`[GoZo] Goods certificate auto-generated for trip ${requestId}: ${cert.certificate_id}`);
+          console.log(`[GoZo] Goods certificate issued at pickup for trip ${requestId}: ${cert.certificate_id}`);
         }
       } catch (certErr) {
         console.error('[GoZo] Certificate generation failed (non-blocking):', certErr.message);
@@ -3324,6 +3375,72 @@ async function runStartupMigration() {
           updated_at TIMESTAMPTZ DEFAULT now()
         );
       ` }).maybeSingle();
+    }
+
+    // Issue 3: Ensure cascade_state column exists for persistent cascade recovery
+    const { error: testCascadeState } = await supabase.from('requests').select('cascade_state').limit(1);
+    if (testCascadeState && testCascadeState.message.includes('does not exist')) {
+      console.log('[Migration] Column requests.cascade_state is missing. Running DDL...');
+      await supabase.rpc('exec_sql', { sql: `ALTER TABLE requests ADD COLUMN IF NOT EXISTS cascade_state JSONB DEFAULT NULL;` }).maybeSingle();
+    }
+
+    // Issue 3: On restart, recover any in-flight cascades that were persisted before the restart
+    const { data: pendingWithCascade } = await supabase
+      .from('requests')
+      .select('id, cascade_state')
+      .eq('status', 'pending')
+      .not('cascade_state', 'is', null);
+
+    if (pendingWithCascade && pendingWithCascade.length > 0) {
+      console.log(`[Migration] Recovering ${pendingWithCascade.length} interrupted cascade(s) after restart...`);
+      for (const row of pendingWithCascade) {
+        const { id: reqId, cascade_state: cs } = row;
+        if (!cs || !Array.isArray(cs.waves)) continue;
+
+        const now = Date.now();
+        const remainingWaves = cs.waves.filter(w => w.fireAtMs > now);
+
+        if (remainingWaves.length === 0) {
+          // All waves already passed \u2014 clear state
+          await supabase.from('requests').update({ cascade_state: null }).eq('id', reqId);
+          continue;
+        }
+
+        pendingCascades[reqId] = [];
+
+        for (const wave of remainingWaves) {
+          const delay = Math.max(0, wave.fireAtMs - now);
+          const tid = setTimeout(async () => {
+            try {
+              const { data: reqCheck } = await supabase.from('requests').select('status').eq('id', reqId).single();
+              if (reqCheck && reqCheck.status === 'pending') {
+                // Fetch FCM tokens for the drivers in this wave
+                const { data: drivers } = await supabase
+                  .from('users')
+                  .select('id, fcm_token')
+                  .in('id', wave.driverIds)
+                  .not('fcm_token', 'is', null);
+
+                if (drivers && drivers.length > 0) {
+                  const fakeRow = { id: reqId, owner_id: null, pickup_address: cs.pickup_address, drop_address: '' };
+                  const results = await Promise.allSettled(
+                    drivers.map((d) => buildRequestNotification(d, fakeRow, cs.goods_type, cs.price_inr, cs.price_info))
+                  );
+                  const sent = results.filter(r => r.status === 'fulfilled').length;
+                  console.log(`[GoZo] Recovered cascade wave (${wave.type}) for ${reqId}: notified ${sent} drivers`);
+                }
+              } else {
+                console.log(`[GoZo] Request ${reqId} no longer pending, skipping recovered wave`);
+              }
+            } catch (e) {
+              console.error(`[GoZo] Recovered cascade wave error for ${reqId}:`, e.message);
+            }
+          }, delay);
+          pendingCascades[reqId].push(tid);
+        }
+
+        console.log(`[Migration] Rebuilt ${remainingWaves.length} cascade wave(s) for request ${reqId}`);
+      }
     }
 
     // 2. Populate routes_v2
