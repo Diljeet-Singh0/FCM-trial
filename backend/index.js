@@ -2520,19 +2520,24 @@ app.delete('/admin/rides/clear-all', requireAdmin, async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
 
-    // 1. Delete all requests
+    // 1. Delete goods_certificates (FK: trip_id → requests.id)
+    await supabase
+      .from('goods_certificates')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    // 2. Delete all scheduled rides
+    await supabase
+      .from('scheduled_rides')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    // 3. Delete all ride requests (safe now that FKs are cleared)
     const { error: reqError } = await supabase
       .from('requests')
       .delete()
       .neq('id', '00000000-0000-0000-0000-000000000000');
     if (reqError) throw reqError;
-
-    // 2. Delete all scheduled rides
-    const { error: schedError } = await supabase
-      .from('scheduled_rides')
-      .delete()
-      .neq('id', '00000000-0000-0000-0000-000000000000');
-    if (schedError) throw schedError;
 
     res.json({ success: true });
   } catch (error) {
@@ -2546,6 +2551,9 @@ app.delete('/admin/rides/:rideId', requireAdmin, async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
     const { rideId } = req.params;
+
+    // Delete child records first (FK: trip_id → requests.id)
+    await supabase.from('goods_certificates').delete().eq('trip_id', rideId);
 
     const { data, error } = await supabase
       .from('requests')
