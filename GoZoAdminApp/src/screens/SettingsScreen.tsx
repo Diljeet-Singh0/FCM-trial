@@ -3,6 +3,7 @@ import {
   StyleSheet,
   Text,
   View,
+  ScrollView,
   TouchableOpacity,
   ActivityIndicator,
   Alert,
@@ -109,7 +110,7 @@ export default function SettingsScreen({ onLogout }: SettingsScreenProps) {
         <Text style={styles.headerTitle}>Admin Settings</Text>
       </View>
 
-      <View style={styles.content}>
+      <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
         {/* User Card */}
         <View style={styles.card}>
           <Text style={styles.label}>LOGGED IN AS</Text>
@@ -180,7 +181,7 @@ export default function SettingsScreen({ onLogout }: SettingsScreenProps) {
         <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
           <Text style={styles.logoutBtnText}>Logout</Text>
         </TouchableOpacity>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -202,7 +203,11 @@ const styles = StyleSheet.create({
     color: COLORS.white,
   },
   content: {
+    flex: 1,
+  },
+  contentContainer: {
     padding: SPACING.md,
+    paddingBottom: 40,
     gap: SPACING.md,
   },
   card: {
