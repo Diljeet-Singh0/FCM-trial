@@ -2515,6 +2515,57 @@ app.get('/admin/rides/:requestId', requireAdmin, async (req, res) => {
   }
 });
 
+// DELETE /admin/rides/clear-all  (MUST be before /:rideId to prevent param capture)
+app.delete('/admin/rides/clear-all', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+
+    // 1. Delete all requests
+    const { error: reqError } = await supabase
+      .from('requests')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+    if (reqError) throw reqError;
+
+    // 2. Delete all scheduled rides
+    const { error: schedError } = await supabase
+      .from('scheduled_rides')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+    if (schedError) throw schedError;
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin Delete All Rides] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /admin/rides/:rideId
+app.delete('/admin/rides/:rideId', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { rideId } = req.params;
+
+    const { data, error } = await supabase
+      .from('requests')
+      .delete()
+      .eq('id', rideId)
+      .select();
+
+    if (error) throw error;
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ success: false, error: 'Ride not found' });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin Ride Delete] error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET /admin/drivers/:driverId/rides
 app.get('/admin/drivers/:driverId/rides', requireAdmin, async (req, res) => {
   try {
@@ -3143,6 +3194,31 @@ app.patch('/admin/scheduled-rides/:rideId/assign', requireAdmin, async (req, res
     res.json({ success: true, ride: { ...updated, driver: driverRow } });
   } catch (error) {
     console.error('[ScheduledRide] assign error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /admin/scheduled-rides/:rideId
+app.delete('/admin/scheduled-rides/:rideId', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { rideId } = req.params;
+
+    const { data, error } = await supabase
+      .from('scheduled_rides')
+      .delete()
+      .eq('id', rideId)
+      .select();
+
+    if (error) throw error;
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ success: false, error: 'Scheduled ride not found' });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin Scheduled Ride Delete] error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
