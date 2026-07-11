@@ -876,13 +876,17 @@ app.post('/gozo/accept-request', async (req, res) => {
     const driverPhone = transporterRow?.phone ?? '';
     const driverVehicle = 'PB-10-AB-1234'; // Placeholder vehicle number
 
-    // Update the request: mark matched, assign transporter, price, and driver info
+    // Calculate driver's exact cut (stored separately for earnings tracking)
+    const driverEarning = getPredefinedPrice(requestRow.goods_type, requestRow.weight_kg).driverCut;
+
+    // Update the request: mark matched, assign transporter, price, driver_earning, and driver info
     const { error: updateError } = await supabase
       .from('requests')
       .update({
         status: 'matched',
         transporter_id: transporterId,
         accepted_price: acceptedPrice,
+        driver_earning: driverEarning,
         driver_name: driverName,
         driver_phone: driverPhone,
         driver_vehicle: driverVehicle
@@ -2310,6 +2314,38 @@ app.get('/gozo/driver-stats/:transporterId', async (req, res) => {
   }
 });
 
+// GET /gozo/driver-earnings/:transporterId — driver-facing earnings summary
+app.get('/gozo/driver-earnings/:transporterId', async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { transporterId } = req.params;
+
+    const { data: trips, error } = await supabase
+      .from('requests')
+      .select('id, created_at, goods_type, weight_kg, accepted_price, driver_earning, pickup_address, drop_address, status')
+      .eq('transporter_id', transporterId)
+      .eq('status', 'completed')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+
+    const allTrips = trips || [];
+    const totalEarned = allTrips.reduce((sum, t) => sum + (Number(t.driver_earning) || Number(t.accepted_price) || 0), 0);
+    const totalTrips = allTrips.length;
+
+    res.json({
+      success: true,
+      trips: allTrips.map(t => ({
+        ...t,
+        driver_earning: Number(t.driver_earning) || Number(t.accepted_price) || 0
+      })),
+      summary: { totalEarned, totalTrips }
+    });
+  } catch (e) {
+    console.error('[GoZo] driver-earnings error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // Helper: send FCM to all admin tokens
 const sendAdminFCM = async (title, body, dataPayload) => {
   if (!admin.apps.length || !supabase) return;
@@ -2657,6 +2693,79 @@ app.get('/admin/drivers/:driverId/rides', requireAdmin, async (req, res) => {
   }
 });
 
+// GET /admin/drivers/:driverId/earnings — earnings and debt summary for a driver
+app.get('/admin/drivers/:driverId/earnings', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { driverId } = req.params;
+
+    // Fetch all completed trips for this driver with price fields
+    const { data: trips, error: tripsError } = await supabase
+      .from('requests')
+      .select('id, created_at, goods_type, weight_kg, accepted_price, driver_earning, pickup_address, drop_address, status')
+      .eq('transporter_id', driverId)
+      .eq('status', 'completed')
+      .order('created_at', { ascending: false });
+    if (tripsError) throw tripsError;
+
+    // Fetch payment history
+    const { data: payments, error: paymentsError } = await supabase
+      .from('driver_payments')
+      .select('id, amount, notes, created_at')
+      .eq('driver_id', driverId)
+      .order('created_at', { ascending: false });
+    if (paymentsError) throw paymentsError;
+
+    const allTrips = trips || [];
+    const allPayments = payments || [];
+
+    // Compute totals
+    const totalDriverEarning = allTrips.reduce((sum, t) => sum + (Number(t.driver_earning) || Number(t.accepted_price) || 0), 0);
+    const totalAccepted = allTrips.reduce((sum, t) => sum + (Number(t.accepted_price) || 0), 0);
+    const totalGozoCut = allTrips.reduce((sum, t) => {
+      const driverCut = Number(t.driver_earning) || Number(t.accepted_price) || 0;
+      const total = Number(t.accepted_price) || 0;
+      return sum + Math.max(0, total - driverCut);
+    }, 0);
+    const totalPaid = allPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+    const outstandingDebt = Math.max(0, totalGozoCut - totalPaid);
+
+    res.json({
+      success: true,
+      trips: allTrips.map(t => ({
+        ...t,
+        driver_earning: Number(t.driver_earning) || Number(t.accepted_price) || 0,
+        gozo_cut: Math.max(0, (Number(t.accepted_price) || 0) - (Number(t.driver_earning) || Number(t.accepted_price) || 0))
+      })),
+      payments: allPayments,
+      summary: { totalDriverEarning, totalAccepted, totalGozoCut, totalPaid, outstandingDebt }
+    });
+  } catch (e) {
+    console.error('[Admin Driver Earnings GET] error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /admin/drivers/:driverId/payments — record a payment from driver to GoZo
+app.post('/admin/drivers/:driverId/payments', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const { driverId } = req.params;
+    const { amount, notes } = req.body;
+    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+      return res.status(400).json({ success: false, error: 'Valid amount is required' });
+    }
+    const { error } = await supabase
+      .from('driver_payments')
+      .insert({ driver_id: driverId, amount: Number(amount), notes: notes || null });
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[Admin Driver Payments POST] error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ─── Admin Panel API ───
 app.post('/admin/auth', (req, res) => {
   const { pin } = req.body;
@@ -2710,7 +2819,11 @@ app.delete('/admin/api/companies/:id', requireAdmin, async (req, res) => {
 app.get('/admin/api/drivers', requireAdmin, async (req, res) => {
   try {
     if (!ensureSupabase(res)) return;
-    const { data, error } = await supabase.from('users').select('id, name, phone, vehicle_number, created_at').eq('role', 'transporter').order('created_at', { ascending: false });
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, name, phone, vehicle_number, vehicle_type, status, created_at, gozo_phone, permanent_address, aadhaar_number, pan_number, dl_number, dl_expiry, bank_account_number, bank_ifsc, bank_account_name')
+      .eq('role', 'transporter')
+      .order('created_at', { ascending: false });
     if (error) throw error;
     res.json({ success: true, drivers: data || [] });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
@@ -2724,6 +2837,29 @@ app.post('/admin/api/drivers', requireAdmin, async (req, res) => {
     const { data: existing } = await supabase.from('users').select('id').eq('phone', phone).maybeSingle();
     if (existing) return res.status(409).json({ success: false, error: 'Phone number already registered' });
     const { error } = await supabase.from('users').insert({ name, phone, role: 'transporter' });
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// PATCH /admin/api/drivers/:id — update driver KYC/vehicle/bank details
+app.patch('/admin/api/drivers/:id', requireAdmin, async (req, res) => {
+  try {
+    if (!ensureSupabase(res)) return;
+    const driverId = req.params.id;
+    const allowedFields = [
+      'name', 'phone', 'vehicle_number', 'vehicle_type',
+      'gozo_phone', 'permanent_address', 'aadhaar_number', 'pan_number',
+      'dl_number', 'dl_expiry', 'bank_account_number', 'bank_ifsc', 'bank_account_name'
+    ];
+    const updates = {};
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) updates[field] = req.body[field] || null;
+    }
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ success: false, error: 'No valid fields to update' });
+    }
+    const { error } = await supabase.from('users').update(updates).eq('id', driverId).eq('role', 'transporter');
     if (error) throw error;
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
@@ -3382,6 +3518,51 @@ async function runStartupMigration() {
     if (testCascadeState && testCascadeState.message.includes('does not exist')) {
       console.log('[Migration] Column requests.cascade_state is missing. Running DDL...');
       await supabase.rpc('exec_sql', { sql: `ALTER TABLE requests ADD COLUMN IF NOT EXISTS cascade_state JSONB DEFAULT NULL;` }).maybeSingle();
+    }
+
+    // ─── Driver Profile & Earnings Expansion Migrations ───
+    // driver_earning on requests: stores the driver's exact payout per trip
+    const { error: testDriverEarning } = await supabase.from('requests').select('driver_earning').limit(1);
+    if (testDriverEarning && testDriverEarning.message.includes('does not exist')) {
+      console.log('[Migration] Column requests.driver_earning is missing. Running DDL...');
+      await supabase.rpc('exec_sql', { sql: `ALTER TABLE requests ADD COLUMN IF NOT EXISTS driver_earning NUMERIC(10,2);` }).maybeSingle();
+    }
+
+    // KYC columns on users (transporter)
+    const kycColumns = [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS gozo_phone TEXT;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS permanent_address TEXT;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS aadhaar_number TEXT;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS pan_number TEXT;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS dl_number TEXT;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS dl_expiry DATE;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS vehicle_type TEXT;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_account_number TEXT;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_ifsc TEXT;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_account_name TEXT;`,
+    ];
+    const { error: testKyc } = await supabase.from('users').select('aadhaar_number').limit(1);
+    if (testKyc && testKyc.message.includes('does not exist')) {
+      console.log('[Migration] KYC columns on users are missing. Running DDL...');
+      for (const sql of kycColumns) {
+        await supabase.rpc('exec_sql', { sql }).maybeSingle();
+      }
+    }
+
+    // driver_payments table for debt tracking
+    const { error: testDriverPayments } = await supabase.from('driver_payments').select('id').limit(1);
+    if (testDriverPayments && (testDriverPayments.message.includes('does not exist') || testDriverPayments.code === '42P01')) {
+      console.log('[Migration] Table driver_payments is missing. Running DDL...');
+      await supabase.rpc('exec_sql', { sql: `
+        CREATE TABLE IF NOT EXISTS driver_payments (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          driver_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          amount NUMERIC(10,2) NOT NULL,
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_driver_payments_driver_id ON driver_payments(driver_id);
+      ` }).maybeSingle();
     }
 
     // Issue 3: On restart, recover any in-flight cascades that were persisted before the restart
