@@ -180,6 +180,7 @@ export const useLocation = (): UseLocationResult => {
       const granted = await requestPermission();
       if (granted) {
         getCurrentLocation();
+        startWatching();
       }
     };
     init();
@@ -187,7 +188,7 @@ export const useLocation = (): UseLocationResult => {
     return () => {
       stopWatching();
     };
-  }, [requestPermission, getCurrentLocation, stopWatching]);
+  }, [requestPermission, getCurrentLocation, startWatching, stopWatching]);
 
   return {
     currentLocation,
