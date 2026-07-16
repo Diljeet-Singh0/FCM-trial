@@ -1203,11 +1203,15 @@ const BookingCard = ({
   const pickupAddress = isIncoming ? req.pickupAddress : req.pickup_address;
   const dropAddress = isIncoming ? req.dropAddress : req.drop_address;
   
-  const driverPayout = isIncoming 
-    ? (req.estimatedFreight || req.priceInr) 
-    : (req.estimated_freight || req.price_inr);
+  const totalPriceVal = isIncoming
+    ? Number(req.priceInr || req.estimatedFreight || 0)
+    : Number(req.price_inr || req.estimated_freight || 0);
 
-  const payoutVal = Number(driverPayout) || 0;
+  const payoutVal = isIncoming
+    ? Number(req.estimatedFreight || (totalPriceVal * 0.9))
+    : Number(req.estimated_freight || (totalPriceVal * 0.9));
+
+  const isAuto = Number(weightKg) <= 500;
   const payoutDisplay = `₹${payoutVal}`;
 
   return (
@@ -1218,8 +1222,9 @@ const BookingCard = ({
           <Text style={[s.goodsTypeText, { flexShrink: 1 }]} numberOfLines={1}>{goodsType} • {weightKg}kg</Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
-          <Text style={s.payoutLabel}>{t.yourPayout}</Text>
+          <Text style={{ fontSize: 11, fontWeight: '700', color: '#64748B', marginBottom: 2 }}>Total: ₹{totalPriceVal}</Text>
           <Text style={s.priceText}>{payoutDisplay}</Text>
+          <Text style={{ fontSize: 10, fontWeight: '800', color: '#10B981', textTransform: 'uppercase', marginTop: 1 }}>{t.yourPayout}</Text>
         </View>
       </View>
 
@@ -1284,10 +1289,14 @@ const BookingCard = ({
             <Text style={s.pricingLabel}>{t.minimumCharge || 'Minimum payout'}</Text>
             <Text style={[s.pricingValue, { color: '#059669', fontWeight: '800' }]}>₹500</Text>
           </View>
+          <View style={s.pricingRow}>
+            <Text style={s.pricingLabel}>Total Ride Price</Text>
+            <Text style={[s.pricingValue, { fontWeight: '700' }]}>₹{totalPriceVal}</Text>
+          </View>
           <View style={s.pricingDivider} />
           <View style={s.pricingRow}>
             <Text style={s.pricingLabel}>{t.estimatedPayout}</Text>
-            <Text style={[s.pricingValue, { fontWeight: '900', fontSize: 16 }]}>₹{payoutVal}</Text>
+            <Text style={[s.pricingValue, { fontWeight: '900', fontSize: 16, color: '#10B981' }]}>₹{payoutVal}</Text>
           </View>
         </View>
       )}
@@ -1478,10 +1487,11 @@ const ActiveDeliveryView: React.FC<{
               <Text style={s.adCustomerMetaInline}>{incomingRequest.weightKg} kg · {incomingRequest.goodsType}</Text>
             </View>
             <View style={{ alignItems: 'flex-end' }}>
-              <Text style={{ fontSize: 11, color: '#6B7280', marginBottom: 2 }}>{t.yourPayout}</Text>
+              <Text style={{ fontSize: 10, color: '#6B7280', fontWeight: '700', marginBottom: 1 }}>Total: ₹{incomingRequest.priceInr || incomingRequest.estimatedFreight}</Text>
               <Text style={s.adPriceInline}>
                 {`₹${incomingRequest.estimatedFreight || incomingRequest.priceInr}`}
               </Text>
+              <Text style={{ fontSize: 9, color: '#10B981', fontWeight: '800', textTransform: 'uppercase' }}>{t.yourPayout}</Text>
             </View>
           </View>
 
@@ -1538,10 +1548,14 @@ const ActiveDeliveryView: React.FC<{
                 <Text style={s.pricingLabel}>{t.minimumCharge || 'Minimum payout'}</Text>
                 <Text style={[s.pricingValue, { color: '#059669', fontWeight: '800' }]}>₹500</Text>
               </View>
+              <View style={s.pricingRow}>
+                <Text style={s.pricingLabel}>Total Ride Price</Text>
+                <Text style={[s.pricingValue, { fontWeight: '700' }]}>₹{incomingRequest.priceInr || incomingRequest.estimatedFreight}</Text>
+              </View>
               <View style={s.pricingDivider} />
               <View style={s.pricingRow}>
                 <Text style={s.pricingLabel}>{t.estimatedPayout}</Text>
-                <Text style={[s.pricingValue, { fontWeight: '900', fontSize: 16 }]}>₹{incomingRequest.estimatedFreight || incomingRequest.priceInr}</Text>
+                <Text style={[s.pricingValue, { fontWeight: '900', fontSize: 16, color: '#10B981' }]}>₹{incomingRequest.estimatedFreight || incomingRequest.priceInr}</Text>
               </View>
             </View>
           )}

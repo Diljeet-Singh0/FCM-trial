@@ -78,7 +78,7 @@ const BookingScreen = ({ company, onBack, onConfirmBooking, isScheduling = false
 
   const [distanceKm, setDistanceKm] = useState(0);
   const [isCalculatingDistance, setIsCalculatingDistance] = useState(false);
-  const [priceRange, setPriceRange] = useState({ rangeMin: 0, rangeMax: 0, driverCut: 0 });
+  const [priceRange, setPriceRange] = useState({ rangeMin: 0, rangeMax: 0, driverCut: 0, userPrice: 0 });
 
   const getLiveLocation = async () => {
     try {
@@ -186,7 +186,7 @@ const BookingScreen = ({ company, onBack, onConfirmBooking, isScheduling = false
       });
       const data = await response.json();
       if (data.success) {
-        setPriceRange({ rangeMin: data.rangeMin, rangeMax: data.rangeMax, driverCut: data.driverCut });
+        setPriceRange({ rangeMin: data.rangeMin, rangeMax: data.rangeMax, driverCut: data.driverCut, userPrice: data.userPrice });
       } else {
         throw new Error(data.error || 'Server returned failure');
       }
@@ -196,16 +196,18 @@ const BookingScreen = ({ company, onBack, onConfirmBooking, isScheduling = false
         const basePrice = Math.max(200, Math.round(computedDistance * 45));
         setPriceRange({
           rangeMin: basePrice,
-          rangeMax: basePrice + 50,
-          driverCut: basePrice
+          rangeMax: basePrice,
+          driverCut: basePrice,
+          userPrice: Math.max(200, Math.round(computedDistance * 50))
         });
       } else {
         // Heavy goods: ₹50/km total, driver gets ₹45/km (90%)
         const driverPayout = Math.max(450, Math.round(computedDistance * 45));
         setPriceRange({
-          rangeMin: Math.round(driverPayout * 0.9),
-          rangeMax: Math.round(driverPayout * 1.1),
-          driverCut: driverPayout
+          rangeMin: driverPayout,
+          rangeMax: driverPayout,
+          driverCut: driverPayout,
+          userPrice: Math.max(500, Math.round(computedDistance * 50))
         });
       }
     }
@@ -455,8 +457,8 @@ const BookingScreen = ({ company, onBack, onConfirmBooking, isScheduling = false
               <Text style={s.breakdownVal}>₹50 / 30 min (First 15 min free)</Text>
             </View>
             <View style={s.totalBreakdownBox}>
-              <Text style={s.totalBreakdownLabel}>Freight Price</Text>
-              <Text style={s.totalBreakdownValue}>₹{priceRange.driverCut}</Text>
+              <Text style={s.totalBreakdownLabel}>Total Price</Text>
+              <Text style={s.totalBreakdownValue}>₹{priceRange.userPrice || priceRange.rangeMin}</Text>
             </View>
           </View>
         ) : (
