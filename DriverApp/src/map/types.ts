@@ -82,6 +82,7 @@ export enum RouteProfile {
 export interface NavigationState {
   mode: NavigationMode;
   currentStepIndex: number;
+  currentRouteIndex: number; // Index of driver's nearest point on route.coordinates
   distanceToNextManeuver: number;
   remainingDistance: number;
   remainingDuration: number;

@@ -110,7 +110,6 @@ const styles = StyleSheet.create({
   divider: {
     height: 1,
     backgroundColor: COLORS.border,
-    my: SPACING.sm,
     marginVertical: SPACING.md,
   },
   routeContainer: {

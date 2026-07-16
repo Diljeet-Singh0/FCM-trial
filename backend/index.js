@@ -478,56 +478,31 @@ app.post('/gozo/auth/signup', async (req, res) => {
 });
 
 const getPredefinedPrice = (rawGoodsType, weightKg, explicitDistance = null) => {
-  let goodsType = rawGoodsType;
+  let goodsType = rawGoodsType || 'general';
   let distanceKm = explicitDistance || 5;
 
+  // Distance is encoded in goods_type by create-request; decode it here
   const distMatch = goodsType.match(/_dist_([\d.]+)/);
   if (distMatch) {
     distanceKm = parseFloat(distMatch[1]);
     goodsType = goodsType.replace(distMatch[0], '');
   }
 
-  const isAuto = weightKg <= 500;
-
-  if (isAuto) {
-    const basePrice = Math.max(200, Math.round(distanceKm * 45));
-    const rangeMin = basePrice;
-    const rangeMax = basePrice + 50; // account for potential waiting charges
-
-    return {
-      total: basePrice,
-      base: basePrice,
-      serviceFee: 0,
-      estimatedFreight: basePrice,
-      driverCut: basePrice,
-      rangeMin,
-      rangeMax,
-    };
-  }
-
-  // ─── Distance-based pricing for heavy goods (>500 kg) ───
-  // Customer pays ₹50/km, driver receives ₹45/km (90%), platform keeps ₹5/km (10%)
-  const RATE_PER_KM = 50;
-  const DRIVER_RATE_PER_KM = 45;
-  const MIN_FARE = 500;         // minimum customer fare
-  const MIN_DRIVER_PAYOUT = 450; // minimum driver payout
-
-  const total = Math.max(MIN_FARE, Math.round(distanceKm * RATE_PER_KM));
-  const driverCut = Math.max(MIN_DRIVER_PAYOUT, Math.round(distanceKm * DRIVER_RATE_PER_KM));
-  const serviceFee = total - driverCut; // platform commission (₹5/km = 10%)
-
-  const estimatedFreight = driverCut;
-  const rangeMin = Math.round(driverCut * 0.9);
-  const rangeMax = Math.round(driverCut * 1.1);
+  const userPrice = Math.max(200, Math.round(distanceKm * 50));
+  const driverEarning = Math.max(180, Math.round(distanceKm * 45));
+  const gozoCut = userPrice - driverEarning;
 
   return {
-    total,
-    base: RATE_PER_KM,
-    serviceFee,
-    estimatedFreight,
-    driverCut,
-    rangeMin,
-    rangeMax,
+    total: userPrice,
+    driverCut: driverEarning,
+    gozoCut: gozoCut,
+    base: 50,                          // rate per km shown in UI
+    serviceFee: gozoCut,
+    estimatedFreight: driverEarning,
+    rangeMin: driverEarning,
+    rangeMax: driverEarning + 50,
+    breakdown: `₹${userPrice} total, driver earns ₹${driverEarning}, GoZo cut ₹${gozoCut}`,
+    currency: 'INR',
   };
 };
 
@@ -538,7 +513,14 @@ app.post('/gozo/estimate-price', (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing goodsType or weightKg' });
     }
     const priceInfo = getPredefinedPrice(goodsType, Number(weightKg), Number(distanceKm || 5));
-    res.json({ success: true, estimate: priceInfo });
+    res.json({
+      success: true,
+      userPrice: priceInfo.total,
+      driverEarning: priceInfo.driverCut,
+      gozoCut: priceInfo.gozoCut,
+      breakdown: priceInfo.breakdown,
+      estimate: priceInfo
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -550,6 +532,10 @@ app.post('/gozo/price-preview', (req, res) => {
     const priceInfo = getPredefinedPrice('general', Number(weightKg || 0), Number(distanceKm || 5));
     res.json({
       success: true,
+      userPrice: priceInfo.total,
+      driverEarning: priceInfo.driverCut,
+      gozoCut: priceInfo.gozoCut,
+      breakdown: priceInfo.breakdown,
       rangeMin: priceInfo.rangeMin,
       rangeMax: priceInfo.rangeMax,
       driverCut: priceInfo.driverCut
@@ -617,13 +603,13 @@ app.post('/gozo/create-request', async (req, res) => {
       return;
     }
 
-    const { ownerId, goodsType, weightKg, pickupAddress, dropAddress, distanceKm } = req.body;
+    const { ownerId, goodsType, weightKg, pickupAddress, dropAddress } = req.body;
     if (!ownerId || !goodsType || !weightKg || !pickupAddress || !dropAddress) {
       return res.status(400).json({ success: false, error: 'Missing required fields' });
     }
 
-    const priceInfo = getPredefinedPrice(goodsType, Number(weightKg), Number(distanceKm || 5));
-    const predefinedPrice = priceInfo.total;
+    const distanceKm = req.body.distanceKm || 5; // default 5km if not provided
+    const priceInfo = getPredefinedPrice(goodsType, Number(weightKg), Number(distanceKm));
 
     // Encode distance into goods_type to avoid DB schema changes
     const storedGoodsType = distanceKm ? `${goodsType}_dist_${distanceKm}` : goodsType;
@@ -635,9 +621,11 @@ app.post('/gozo/create-request', async (req, res) => {
         goods_type: storedGoodsType,
         weight_kg: Number(weightKg),
         pickup_address: pickupAddress,
-        drop_address: dropAddress
+        drop_address: dropAddress,
+        accepted_price: priceInfo.total,
+        driver_earning: priceInfo.driverCut
       })
-      .select('id, owner_id, goods_type, weight_kg, pickup_address, drop_address')
+      .select('id, owner_id, goods_type, weight_kg, pickup_address, drop_address, accepted_price, driver_earning')
       .single();
 
     if (requestError) {
@@ -855,7 +843,7 @@ app.post('/gozo/accept-request', async (req, res) => {
     }
 
     if (requestRow.status !== 'pending') {
-      return res.status(409).json({ success: false, error: 'Request is no longer available' });
+      return res.status(409).json({ success: false, error: 'This ride is no longer available — it was accepted by another driver.' });
     }
 
     // Calculate the predefined price for consistency
@@ -1069,7 +1057,7 @@ app.get('/gozo/requests/:ownerId', async (req, res) => {
 
     const { data: requests, error: requestsError } = await supabase
       .from('requests')
-      .select('*')
+      .select('id, owner_id, goods_type, weight_kg, pickup_address, drop_address, status, transporter_id, accepted_price, driver_earning, driver_name, driver_vehicle, driver_phone, rating, company_id, company_name, vehicle_type, company_charge, auto_charge, created_at')
       .eq('owner_id', ownerId)
       .order('created_at', { ascending: false });
 
@@ -1109,6 +1097,7 @@ app.get('/gozo/active-requests', async (req, res) => {
         estimated_freight: priceInfo.estimatedFreight,
         service_fee: priceInfo.serviceFee,
         driver_cut: priceInfo.driverCut,
+        driver_earning: request.driver_earning || priceInfo.driverCut,
         range_min: priceInfo.rangeMin,
         range_max: priceInfo.rangeMax,
       };
@@ -1826,6 +1815,16 @@ app.post('/gozo/update-trip-status', async (req, res) => {
       return res.status(400).json({ success: false, error: `Invalid status. Must be one of: ${VALID_TRIP_STATUSES.join(', ')}` });
     }
 
+    const { data: currentRequest } = await supabase
+      .from('requests')
+      .select('status')
+      .eq('id', requestId)
+      .single();
+
+    if (currentRequest && currentRequest.status === status) {
+      return res.json({ success: true, message: 'Already in this status', idempotent: true });
+    }
+
     // Verify the request belongs to this transporter
     const { data: requestRow, error: requestLookupError } = await supabase
       .from('requests')
@@ -2254,7 +2253,7 @@ app.get('/gozo/driver-history/:transporterId', async (req, res) => {
 
     const { data: requests, error: requestsError } = await supabase
       .from('requests')
-      .select('*')
+      .select('id, owner_id, goods_type, weight_kg, pickup_address, drop_address, status, transporter_id, accepted_price, driver_earning, driver_name, driver_vehicle, driver_phone, rating, company_id, company_name, vehicle_type, company_charge, auto_charge, created_at')
       .eq('transporter_id', transporterId)
       .in('status', ['matched', 'picked_up', 'on_the_way', 'completed'])
       .order('created_at', { ascending: false });
@@ -2263,7 +2262,12 @@ app.get('/gozo/driver-history/:transporterId', async (req, res) => {
       throw requestsError;
     }
 
-    res.json({ success: true, requests: requests ?? [] });
+    const mappedRequests = (requests ?? []).map(r => ({
+      ...r,
+      driverCut: r.driver_earning ? Number(r.driver_earning) : (r.accepted_price ? Number(r.accepted_price) : 0)
+    }));
+
+    res.json({ success: true, requests: mappedRequests });
   } catch (error) {
     console.error('[GoZo] driver-history error:', error);
     res.status(500).json({ success: false, error: error.message });

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Modal, Platform, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { fetchDriverHistory } from '../api';
+import { ActivityIndicator, Alert, Image, Modal, Platform, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View, FlatList } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { fetchDriverHistory, fetchRequestDetails } from '../api';
 
 
 type HistoryItem = {
@@ -28,6 +29,7 @@ const DriverHistoryScreen = ({ transporterId, onBack, t }: Props) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<HistoryItem | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [showBuilty, setShowBuilty] = useState(false);
 
   useEffect(() => {
@@ -37,10 +39,50 @@ const DriverHistoryScreen = ({ transporterId, onBack, t }: Props) => {
 
 
   const loadHistory = async () => {
-    setLoading(true);
+    const cacheKey = `gozo_cached_driver_history_${transporterId}`;
+    
+    // 1. Instantly load from cache to ensure 0ms load speed
+    try {
+      const cached = await AsyncStorage.getItem(cacheKey);
+      if (cached) {
+        setHistory(JSON.parse(cached));
+        setLoading(false);
+      }
+    } catch (e) {
+      console.warn('Failed to load cached driver history', e);
+    }
+
+    // 2. Fetch fresh requests from server in background
     const res = await fetchDriverHistory(transporterId);
-    if (res.success) setHistory(res.requests);
+    if (res.success) {
+      setHistory(res.requests);
+      try {
+        await AsyncStorage.setItem(cacheKey, JSON.stringify(res.requests));
+      } catch (e) {
+        console.warn('Failed to save history cache', e);
+      }
+    } else if (res.error) {
+      const cached = await AsyncStorage.getItem(cacheKey);
+      if (!cached) {
+        Alert.alert('Error', res.error);
+      }
+    }
     setLoading(false);
+  };
+
+  const handleSelectItem = async (item: HistoryItem) => {
+    setDetailLoading(true);
+    setSelectedItem(item);
+    try {
+      const res = await fetchRequestDetails(item.id);
+      if (res.success && res.request) {
+        setSelectedItem(res.request);
+      }
+    } catch (e) {
+      console.warn('Failed to load trip details:', e);
+    } finally {
+      setDetailLoading(false);
+    }
   };
 
   const getStatusInfo = (status: string) => {
@@ -79,7 +121,12 @@ const DriverHistoryScreen = ({ transporterId, onBack, t }: Props) => {
           <Text style={s.headerTitle}>{t.tripDetails}</Text>
           <View style={{ width: 40 }} />
         </View>
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }} showsVerticalScrollIndicator={false}>
+        {detailLoading ? (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <ActivityIndicator size="large" color="#1A56DB" />
+          </View>
+        ) : (
+          <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }} showsVerticalScrollIndicator={false}>
           {/* Status banner */}
           <View style={[s.statusBanner, { backgroundColor: info.color }]}>
             <Text style={s.statusBannerIcon}>{info.icon}</Text>
@@ -166,6 +213,7 @@ const DriverHistoryScreen = ({ transporterId, onBack, t }: Props) => {
             </View>
           )}
         </ScrollView>
+        )}
 
 
         {/* Full-screen builty */}
@@ -218,11 +266,19 @@ const DriverHistoryScreen = ({ transporterId, onBack, t }: Props) => {
           <ActivityIndicator size="large" color="#1A56DB" />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }} showsVerticalScrollIndicator={false}>
-          {history.map((item) => {
+        <FlatList
+          data={history}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ padding: 16, paddingBottom: 30 }}
+          showsVerticalScrollIndicator={false}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews={true}
+          renderItem={({ item }) => {
             const info = getStatusInfo(item.status);
             return (
-              <TouchableOpacity key={item.id} style={s.histCard} onPress={() => setSelectedItem(item)} activeOpacity={0.7}>
+              <TouchableOpacity key={item.id} style={s.histCard} onPress={() => handleSelectItem(item)} activeOpacity={0.7}>
                 <View style={s.histCardAccent} />
                 <View style={s.histCardBody}>
                   <View style={s.histTopRow}>
@@ -250,15 +306,15 @@ const DriverHistoryScreen = ({ transporterId, onBack, t }: Props) => {
                 </View>
               </TouchableOpacity>
             );
-          })}
-          {history.length === 0 && (
+          }}
+          ListEmptyComponent={
             <View style={s.emptyState}>
               <Text style={{ fontSize: 48 }}>📭</Text>
               <Text style={s.emptyTitle}>{t.noTripsYet}</Text>
               <Text style={s.emptySub}>{t.completedTripsHere}</Text>
             </View>
-          )}
-        </ScrollView>
+          }
+        />
       )}
     </View>
   );

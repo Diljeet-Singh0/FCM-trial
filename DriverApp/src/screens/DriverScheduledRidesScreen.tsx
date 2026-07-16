@@ -291,7 +291,7 @@ const s = StyleSheet.create({
   },
   bookingId: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
   badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
-  badgeText: { fontSize: 11, fontWeight: '850', textTransform: 'uppercase', letterSpacing: 0.5 },
+  badgeText: { fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
   routeSection: { flexDirection: 'row', marginBottom: 14 },
   routeDots: { alignItems: 'center', marginRight: 12, paddingTop: 4 },
   greenDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#22C55E' },

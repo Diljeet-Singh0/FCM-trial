@@ -1,7 +1,6 @@
 import {useState, useRef, useCallback, useEffect} from 'react';
-import {Platform, PermissionsAndroid} from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
-import {Coordinate, Route, NavigationState, NavigationMode, TripStats} from '../types';
+import {Coordinate, Route, NavigationState, NavigationMode, TripStats, RouteProfile} from '../types';
 import {
   haversineDistance,
   calculateBearing,
@@ -32,6 +31,7 @@ interface UseNavigationResult {
 const initialState: NavigationState = {
   mode: NavigationMode.IDLE,
   currentStepIndex: 0,
+  currentRouteIndex: 0,
   distanceToNextManeuver: 0,
   remainingDistance: 0,
   remainingDuration: 0,
@@ -72,8 +72,8 @@ export const useNavigation = (): UseNavigationResult => {
   const smoothedLocationRef = useRef<Coordinate | null>(null);
   const GPS_ACCURACY_THRESHOLD = 30; // Ignore readings with accuracy worse than 30m
   const STATIONARY_SPEED_THRESHOLD = 0.5; // m/s — below this, consider stationary
-  const STATIONARY_DISTANCE_THRESHOLD = 0.008; // 8 meters in km — ignore micro-movements when stationary
-  const SMOOTHING_FACTOR = 0.35; // Exponential smoothing: 0 = full old, 1 = full new
+  const STATIONARY_DISTANCE_THRESHOLD = 0.003; // 3 meters in km — tighter to reduce lag
+  const SMOOTHING_FACTOR = 0.75; // Higher = faster response to new GPS readings (was 0.35)
 
   const cleanup = useCallback(() => {
     if (watchIdRef.current !== null) {
@@ -88,7 +88,7 @@ export const useNavigation = (): UseNavigationResult => {
 
   // ─── Reroute from current position to destination ───
   const performReroute = useCallback(
-    async (currentCoord: Coordinate) => {
+    async (currentCoord: Coordinate, currentBearing: number) => {
       if (isReroutingRef.current || !destinationRef.current || !isActiveRef.current) {
         return;
       }
@@ -110,7 +110,14 @@ export const useNavigation = (): UseNavigationResult => {
       }));
 
       try {
-        const newRoute = await fetchRoute(currentCoord, destinationRef.current);
+        // Pass bearing so Directions API snaps to the road the driver is facing,
+        // avoiding backtrack/U-turn suggestions
+        const newRoute = await fetchRoute(
+          currentCoord,
+          destinationRef.current!,
+          RouteProfile.DRIVING_TRAFFIC,
+          currentBearing,
+        );
 
         if (newRoute && isActiveRef.current) {
           // Update refs and state with the new route
@@ -125,6 +132,7 @@ export const useNavigation = (): UseNavigationResult => {
           setNavigationState({
             mode: NavigationMode.NAVIGATING,
             currentStepIndex: 0,
+            currentRouteIndex: 0,
             distanceToNextManeuver: 0,
             remainingDistance: newRoute.distance,
             remainingDuration: newRoute.duration,
@@ -173,13 +181,23 @@ export const useNavigation = (): UseNavigationResult => {
       }
       lastLocationRef.current = coord;
 
+      // Calculate bearing from current position toward next route point
+      // (must be computed before the off-route detection block which passes it to performReroute)
+      let currentBearing = 0;
+      if (nearestIndex < totalPoints - 1) {
+        const nextRoutePoint = route.coordinates[Math.min(nearestIndex + 3, totalPoints - 1)];
+        currentBearing = calculateBearing(coord, nextRoutePoint);
+        setLiveBearing(currentBearing);
+      }
+
       // ─── Off-Route Detection ───
       if (distFromRoute > OFF_ROUTE_THRESHOLD_KM) {
         offRouteCountRef.current += 1;
 
         if (offRouteCountRef.current >= OFF_ROUTE_CONFIRM_COUNT && !isReroutingRef.current) {
-          // Driver is confirmed off-route — trigger reroute
-          performReroute(coord);
+          // Driver is confirmed off-route — trigger reroute with current forward bearing
+          // so the Directions API avoids snapping to the road segment behind the driver
+          performReroute(coord, currentBearing);
           return; // Don't update state further — reroute will set fresh state
         }
 
@@ -215,18 +233,10 @@ export const useNavigation = (): UseNavigationResult => {
       };
       const distToManeuver = haversineDistance(coord, stepManeuverCoord) * 1000;
 
-      // Calculate bearing from current position toward next route point
-      if (nearestIndex < totalPoints - 1) {
-        const nextRoutePoint = route.coordinates[Math.min(nearestIndex + 3, totalPoints - 1)];
-        const bearing = calculateBearing(coord, nextRoutePoint);
-        setLiveBearing(bearing);
-      }
-
-      // Check arrival
-      const destCoord = route.coordinates[totalPoints - 1];
-      const distToDestination = haversineDistance(coord, destCoord);
-
-      if (distToDestination < ARRIVAL_THRESHOLD_KM) {
+      // Check arrival using route-path remaining distance (not straight-line haversine).
+      // This prevents false arrival triggers when the driver is on a parallel street
+      // that happens to be geometrically close to the destination.
+      if (remainingDist < ARRIVAL_THRESHOLD_KM) {
         const endTime = new Date();
         const timeTaken = (endTime.getTime() - startTimeRef.current.getTime()) / 1000;
 
@@ -259,6 +269,7 @@ export const useNavigation = (): UseNavigationResult => {
       setNavigationState({
         mode: NavigationMode.NAVIGATING,
         currentStepIndex: currentStepIdx,
+        currentRouteIndex: nearestIndex,
         distanceToNextManeuver: distToManeuver,
         remainingDistance: remainingDist,
         remainingDuration,
@@ -300,6 +311,7 @@ export const useNavigation = (): UseNavigationResult => {
       setNavigationState({
         mode: NavigationMode.NAVIGATING,
         currentStepIndex: 0,
+        currentRouteIndex: 0,
         distanceToNextManeuver: 0,
         remainingDistance: route.distance,
         remainingDuration: route.duration,
@@ -372,9 +384,9 @@ export const useNavigation = (): UseNavigationResult => {
         },
         {
           enableHighAccuracy: true,
-          distanceFilter: 10, // Only fire when moved 10m (was 5m, too sensitive)
-          interval: 2000, // Android: check every 2 seconds (was 1s)
-          fastestInterval: 1000, // Android: fastest update 1s (was 500ms)
+          distanceFilter: 3, // Fire every 3m for smoother tracking (was 10m)
+          interval: 1000, // Android: check every 1 second (was 2s)
+          fastestInterval: 500, // Android: fastest update 500ms (was 1s)
           showsBackgroundLocationIndicator: true,
         },
       );

@@ -14,6 +14,7 @@ import {
   ActivityIndicator,
   PermissionsAndroid,
   Platform,
+  FlatList,
 } from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
 import messaging from '@react-native-firebase/messaging';
@@ -119,9 +120,10 @@ const App = () => {
   const [selectedScheduledRideId, setSelectedScheduledRideId] = useState<string | null>(null);
 
   const fetchRequests = async (ownerIdValue: string) => {
+    const cacheKey = `gozo_cached_requests_${ownerIdValue}`;
     // 1. Instantly load from cache to ensure 0ms load speed
     try {
-      const cached = await AsyncStorage.getItem('gozo_cached_requests');
+      const cached = await AsyncStorage.getItem(cacheKey);
       if (cached) {
         setRequests(JSON.parse(cached));
       }
@@ -134,13 +136,13 @@ const App = () => {
     if (response.success) {
       setRequests(response.requests);
       try {
-        await AsyncStorage.setItem('gozo_cached_requests', JSON.stringify(response.requests));
+        await AsyncStorage.setItem(cacheKey, JSON.stringify(response.requests));
       } catch (e) {
         console.warn('Failed to save requests cache', e);
       }
     } else if (response.error) {
       // Do not alert on background fetch failure if we already have cached data
-      const cached = await AsyncStorage.getItem('gozo_cached_requests');
+      const cached = await AsyncStorage.getItem(cacheKey);
       if (!cached) {
         Alert.alert('Error', response.error);
       }
@@ -154,7 +156,7 @@ const App = () => {
         if (storedId) {
           setOwnerId(storedId);
           // Load cached requests immediately during bootstrap
-          const cached = await AsyncStorage.getItem('gozo_cached_requests');
+          const cached = await AsyncStorage.getItem(`gozo_cached_requests_${storedId}`);
           if (cached) {
             setRequests(JSON.parse(cached));
           }
@@ -480,6 +482,13 @@ const App = () => {
         style: 'destructive',
         onPress: async () => {
           await AsyncStorage.removeItem('gozo_owner_id');
+          setRequests([]);
+          setActiveRequestId(null);
+          setSelectedOrderId(null);
+          setAcceptedDriver(null);
+          setSelectedCompany(null);
+          setCertificateTripId(null);
+          setSelectedScheduledRideId(null);
           setOwnerId(null);
           setScreen('home');
         }
@@ -720,110 +729,122 @@ const App = () => {
   );
 
   // ─── MY REQUESTS SCREEN ───
-  const renderMyRequests = () => (
-    <View style={{ flex: 1, backgroundColor: '#F5F5F5' }}>
-      {/* Header */}
-      <View style={s.screenHeader}>
-        <TouchableOpacity onPress={() => setScreen('home')} style={s.backBtn}>
-          <Text style={s.backArrow}>←</Text>
-        </TouchableOpacity>
-        <View>
-          <Text style={s.screenTitle}>My Orders</Text>
-          <Text style={s.screenSubtitle}>{requests.length} shipments</Text>
-        </View>
-        <View style={{ width: 40 }} />
-      </View>
-
-      {/* Results count banner */}
-      <View style={s.resultsBanner}>
-        <View>
-          <Text style={s.resultsBannerTitle}>{requests.length} orders found</Text>
-          <Text style={s.resultsBannerSub}>goods movement</Text>
-        </View>
-        <Text style={{ fontSize: 28 }}>📦</Text>
-      </View>
-
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
-        {requests.map((item) => {
-          const isOngoing = item.status === 'matched' || item.status === 'picked_up' || item.status === 'on_the_way';
-          return (
-            <TouchableOpacity key={item.id} style={[s.orderCard, isOngoing && s.orderCardOngoing]} onPress={() => { setSelectedOrderId(item.id); setScreen('order-detail'); }} activeOpacity={0.7}>
-              {/* Status pill */}
-              <View style={[s.orderStatusPill, { backgroundColor: statusColorMap[item.status] ?? '#607D8B' }]}>
-                <Text style={s.orderStatusText}>{STATUS_LABELS[item.status] || item.status.toUpperCase()}</Text>
-              </View>
-
-              {/* Ongoing indicator */}
-              {isOngoing && (
-                <View style={s.ongoingBadge}>
-                  <View style={s.ongoingDot} />
-                  <Text style={s.ongoingText}>LIVE · Trip in progress</Text>
-                </View>
-              )}
-
-              {/* Goods info */}
-              <Text style={s.orderGoodsTitle}>{item.goods_type}</Text>
-              <Text style={s.orderMeta}>{item.weight_kg} kg</Text>
-
-              {/* Driver info for assigned trips */}
-              {item.driver_name && (
-                <View style={s.orderDriverRow}>
-                  <View style={s.orderDriverAvatar}>
-                    <Text style={s.orderDriverAvatarText}>{item.driver_name.charAt(0)}</Text>
-                  </View>
-                  <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={s.orderDriverName}>{item.driver_name}</Text>
-                    {item.driver_phone ? <Text style={s.orderDriverPhone}>📞 {item.driver_phone}</Text> : null}
-                    {item.driver_vehicle ? <Text style={s.orderDriverPhone}>🚛 {item.driver_vehicle}</Text> : null}
-                  </View>
-                  {item.accepted_price ? (
-                    <Text style={s.orderDriverPrice}>₹{item.accepted_price}</Text>
-                  ) : null}
-                </View>
-              )}
-
-              {/* Route */}
-              <View style={s.routeContainer}>
-                <View style={s.routeDots}>
-                  <View style={s.greenDotSmall} />
-                  <View style={s.routeLine} />
-                  <View style={s.blackDotSmall} />
-                </View>
-                <View style={s.routeTexts}>
-                  <View style={s.routeItem}>
-                    <Text style={s.routeLabel}>Pickup</Text>
-                    <Text style={s.routeAddress}>{item.pickup_address}</Text>
-                  </View>
-                  <View style={[s.routeItem, { marginTop: 16 }]}>
-                    <Text style={s.routeLabel}>Drop</Text>
-                    <Text style={s.routeAddress}>{item.drop_address}</Text>
-                  </View>
-                </View>
-              </View>
-
-              {item.status === 'matched' && item.accepted_price && !item.driver_name && (
-                <View style={s.matchedBanner}>
-                  <Text style={s.matchedBannerText}>✅ Matched at ₹{item.accepted_price}</Text>
-                </View>
-              )}
-
-              <View style={s.viewDetailsRow}>
-                <Text style={s.viewDetailsText}>{isOngoing ? 'View Full Details  →' : 'View Details  →'}</Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
-        {requests.length === 0 && (
-          <View style={s.emptyState}>
-            <Text style={{ fontSize: 48 }}>📭</Text>
-            <Text style={s.emptyStateText}>No orders found</Text>
-            <Text style={s.emptyStateSub}>Create a new shipment request to get started</Text>
+  const renderMyRequests = () => {
+    const renderOrderItem = ({ item }: { item: RequestItem }) => {
+      const isOngoing = item.status === 'matched' || item.status === 'picked_up' || item.status === 'on_the_way';
+      return (
+        <TouchableOpacity key={item.id} style={[s.orderCard, isOngoing && s.orderCardOngoing]} onPress={() => { setSelectedOrderId(item.id); setScreen('order-detail'); }} activeOpacity={0.7}>
+          {/* Status pill */}
+          <View style={[s.orderStatusPill, { backgroundColor: statusColorMap[item.status] ?? '#607D8B' }]}>
+            <Text style={s.orderStatusText}>{STATUS_LABELS[item.status] || item.status.toUpperCase()}</Text>
           </View>
-        )}
-      </ScrollView>
-      <BottomTabBar />
-    </View>
-  );
+
+          {/* Ongoing indicator */}
+          {isOngoing && (
+            <View style={s.ongoingBadge}>
+              <View style={s.ongoingDot} />
+              <Text style={s.ongoingText}>LIVE · Trip in progress</Text>
+            </View>
+          )}
+
+          {/* Goods info */}
+          <Text style={s.orderGoodsTitle}>{item.goods_type}</Text>
+          <Text style={s.orderMeta}>{item.weight_kg} kg</Text>
+
+          {/* Driver info for assigned trips */}
+          {item.driver_name && (
+            <View style={s.orderDriverRow}>
+              <View style={s.orderDriverAvatar}>
+                <Text style={s.orderDriverAvatarText}>{item.driver_name.charAt(0)}</Text>
+              </View>
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <Text style={s.orderDriverName}>{item.driver_name}</Text>
+                {item.driver_phone ? <Text style={s.orderDriverPhone}>📞 {item.driver_phone}</Text> : null}
+                {item.driver_vehicle ? <Text style={s.orderDriverPhone}>🚛 {item.driver_vehicle}</Text> : null}
+              </View>
+              {item.accepted_price ? (
+                <Text style={s.orderDriverPrice}>₹{item.accepted_price}</Text>
+              ) : null}
+            </View>
+          )}
+
+          {/* Route */}
+          <View style={s.routeContainer}>
+            <View style={s.routeDots}>
+              <View style={s.greenDotSmall} />
+              <View style={s.routeLine} />
+              <View style={s.blackDotSmall} />
+            </View>
+            <View style={s.routeTexts}>
+              <View style={s.routeItem}>
+                <Text style={s.routeLabel}>Pickup</Text>
+                <Text style={s.routeAddress}>{item.pickup_address}</Text>
+              </View>
+              <View style={[s.routeItem, { marginTop: 16 }]}>
+                <Text style={s.routeLabel}>Drop</Text>
+                <Text style={s.routeAddress}>{item.drop_address}</Text>
+              </View>
+            </View>
+          </View>
+
+          {item.status === 'matched' && item.accepted_price && !item.driver_name && (
+            <View style={s.matchedBanner}>
+              <Text style={s.matchedBannerText}>✅ Matched at ₹{item.accepted_price}</Text>
+            </View>
+          )}
+
+          <View style={s.viewDetailsRow}>
+            <Text style={s.viewDetailsText}>{isOngoing ? 'View Full Details  →' : 'View Details  →'}</Text>
+          </View>
+        </TouchableOpacity>
+      );
+    };
+
+    return (
+      <View style={{ flex: 1, backgroundColor: '#F5F5F5' }}>
+        {/* Header */}
+        <View style={s.screenHeader}>
+          <TouchableOpacity onPress={() => setScreen('home')} style={s.backBtn}>
+            <Text style={s.backArrow}>←</Text>
+          </TouchableOpacity>
+          <View>
+            <Text style={s.screenTitle}>My Orders</Text>
+            <Text style={s.screenSubtitle}>{requests.length} shipments</Text>
+          </View>
+          <View style={{ width: 40 }} />
+        </View>
+
+        {/* Results count banner */}
+        <View style={s.resultsBanner}>
+          <View>
+            <Text style={s.resultsBannerTitle}>{requests.length} orders found</Text>
+            <Text style={s.resultsBannerSub}>goods movement</Text>
+          </View>
+          <Text style={{ fontSize: 28 }}>📦</Text>
+        </View>
+
+        <FlatList
+          data={requests}
+          renderItem={renderOrderItem}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+          showsVerticalScrollIndicator={false}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews={true}
+          ListEmptyComponent={
+            <View style={s.emptyState}>
+              <Text style={{ fontSize: 48 }}>📭</Text>
+              <Text style={s.emptyStateText}>No orders found</Text>
+              <Text style={s.emptyStateSub}>Create a new shipment request to get started</Text>
+            </View>
+          }
+        />
+        <BottomTabBar />
+      </View>
+    );
+  };
 
   const handleCompanySelect = (company: Company) => {
     setSelectedCompany(company);
@@ -990,6 +1011,13 @@ const App = () => {
           onBack={() => setScreen('home')}
           onLogout={async () => {
             await AsyncStorage.removeItem('gozo_owner_id');
+            setRequests([]);
+            setActiveRequestId(null);
+            setSelectedOrderId(null);
+            setAcceptedDriver(null);
+            setSelectedCompany(null);
+            setCertificateTripId(null);
+            setSelectedScheduledRideId(null);
             setOwnerId(null);
             setScreen('home');
           }}

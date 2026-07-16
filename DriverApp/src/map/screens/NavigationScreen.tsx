@@ -71,6 +71,7 @@ const NavigationScreen: React.FC = () => {
         destinationCoords={destinationCoords}
         route={displayRoute}
         navigationMode={NavigationMode.NAVIGATING}
+        currentRouteIndex={navigationState.currentRouteIndex}
       />
 
       {/* Navigation HUD */}

@@ -41,8 +41,14 @@ type Props = {
 export const DriverScheduledRideDetailScreen = ({ rideId, transporterId, onBack, onRideStarted, t }: Props) => {
   const [ride, setRide] = useState<ScheduledRideDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [isArriving, setIsArriving] = useState(false);
+  const [isPickingUp, setIsPickingUp] = useState(false);
+  const [isDelivering, setIsDelivering] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState<string>('');
+
+  const anySubmitting = isStarting || isCancelling || isArriving || isPickingUp || isDelivering;
 
   const loadDetail = async () => {
     setLoading(true);
@@ -81,7 +87,7 @@ export const DriverScheduledRideDetailScreen = ({ rideId, transporterId, onBack,
   }, [ride]);
 
   const handleStartRide = async () => {
-    if (!ride) return;
+    if (!ride || anySubmitting) return;
 
     // Validation: 2 hours from now
     const now = new Date().getTime();
@@ -96,26 +102,30 @@ export const DriverScheduledRideDetailScreen = ({ rideId, transporterId, onBack,
       return;
     }
 
-    setActionLoading(true);
-    const res = await startScheduledRide(ride.id, transporterId);
-    setActionLoading(false);
-
-    if (res.success) {
-      Alert.alert('Trip Started 🚛', 'Head to the pickup location.', [
-        {
-          text: 'OK',
-          onPress: () => {
-            onRideStarted();
+    setIsStarting(true);
+    try {
+      const res = await startScheduledRide(ride.id, transporterId);
+      if (res.success) {
+        Alert.alert('Trip Started 🚛', 'Head to the pickup location.', [
+          {
+            text: 'OK',
+            onPress: () => {
+              onRideStarted();
+            }
           }
-        }
-      ]);
-    } else {
-      Alert.alert('Error', res.error || 'Could not start ride');
+        ]);
+      } else {
+        Alert.alert('Error', res.error || 'Could not start ride');
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not start ride');
+    } finally {
+      setIsStarting(false);
     }
   };
 
   const handleCancelAssignment = () => {
-    if (!ride) return;
+    if (!ride || anySubmitting) return;
 
     const now = new Date().getTime();
     const scheduled = new Date(ride.scheduled_time).getTime();
@@ -138,15 +148,20 @@ export const DriverScheduledRideDetailScreen = ({ rideId, transporterId, onBack,
           text: 'Yes, Cancel',
           style: 'destructive',
           onPress: async () => {
-            setActionLoading(true);
-            const res = await cancelScheduledRide(ride.id, 'driver', 'Driver self-cancelled');
-            setActionLoading(false);
-            if (res.success) {
-              Alert.alert('Cancelled', 'Assignment cancelled successfully.', [
-                { text: 'OK', onPress: onBack }
-              ]);
-            } else {
-              Alert.alert('Error', res.error || 'Failed to cancel assignment.');
+            setIsCancelling(true);
+            try {
+              const res = await cancelScheduledRide(ride.id, 'driver', 'Driver self-cancelled');
+              if (res.success) {
+                Alert.alert('Cancelled', 'Assignment cancelled successfully.', [
+                  { text: 'OK', onPress: onBack }
+                ]);
+              } else {
+                Alert.alert('Error', res.error || 'Failed to cancel assignment.');
+              }
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Failed to cancel assignment.');
+            } finally {
+              setIsCancelling(false);
             }
           }
         }
@@ -155,20 +170,29 @@ export const DriverScheduledRideDetailScreen = ({ rideId, transporterId, onBack,
   };
 
   const handleUpdateStatus = async (newStatus: 'arrived' | 'picked_up' | 'delivered') => {
-    if (!ride) return;
+    if (!ride || anySubmitting) return;
 
-    setActionLoading(true);
-    const res = await updateScheduledRideStatus(ride.id, transporterId, newStatus);
-    setActionLoading(false);
+    let setter: ((val: boolean) => void) | null = null;
+    if (newStatus === 'arrived') setter = setIsArriving;
+    else if (newStatus === 'picked_up') setter = setIsPickingUp;
+    else if (newStatus === 'delivered') setter = setIsDelivering;
 
-    if (res.success) {
-      Alert.alert(
-        'Status Updated',
-        `Ride status updated to: ${newStatus.replace('_', ' ').toUpperCase()}`
-      );
-      loadDetail();
-    } else {
-      Alert.alert('Error', res.error || 'Failed to update status.');
+    if (setter) setter(true);
+    try {
+      const res = await updateScheduledRideStatus(ride.id, transporterId, newStatus);
+      if (res.success) {
+        Alert.alert(
+          'Status Updated',
+          `Ride status updated to: ${newStatus.replace('_', ' ').toUpperCase()}`
+        );
+        loadDetail();
+      } else {
+        Alert.alert('Error', res.error || 'Failed to update status.');
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to update status.');
+    } finally {
+      if (setter) setter(false);
     }
   };
 
@@ -290,69 +314,86 @@ export const DriverScheduledRideDetailScreen = ({ rideId, transporterId, onBack,
 
         {/* Actions Section */}
         <View style={{ marginTop: 10 }}>
-          {actionLoading ? (
-            <ActivityIndicator size="large" color="#1A56DB" />
-          ) : (
+          {ride.status === 'assigned' && (
             <>
-              {ride.status === 'assigned' && (
-                <>
-                  <TouchableOpacity
-                    style={[s.primaryBtn, diffHours > 2 && s.disabledBtn]}
-                    onPress={handleStartRide}
-                    disabled={diffHours > 2}
-                  >
-                    <Text style={s.primaryBtnText}>Start Ride</Text>
-                  </TouchableOpacity>
-                  {diffHours > 2 && (
-                    <Text style={s.earlyHint}>
-                      Starts working 2 hours before the scheduled time.
-                    </Text>
-                  )}
-                  
-                  <TouchableOpacity
-                    style={[s.cancelBtn, !canCancel && s.disabledCancelBtn]}
-                    onPress={handleCancelAssignment}
-                    disabled={!canCancel}
-                  >
-                    <Text style={[s.cancelBtnText, !canCancel && { color: '#94A3B8' }]}>
-                      Cancel Assignment
-                    </Text>
-                  </TouchableOpacity>
-                  {!canCancel && (
-                    <Text style={s.cancelHint}>
-                      Assignment locked. Cancellations are blocked within 4 hours of the scheduled time.
-                    </Text>
-                  )}
-                </>
+              <TouchableOpacity
+                style={[s.primaryBtn, (diffHours > 2 || anySubmitting) && s.disabledBtn, isStarting && { opacity: 0.6 }]}
+                onPress={handleStartRide}
+                disabled={diffHours > 2 || anySubmitting}
+              >
+                {isStarting ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={s.primaryBtnText}>Start Ride</Text>
+                )}
+              </TouchableOpacity>
+              {diffHours > 2 && (
+                <Text style={s.earlyHint}>
+                  Starts working 2 hours before the scheduled time.
+                </Text>
               )}
-
-              {ride.status === 'on_the_way' && (
-                <TouchableOpacity
-                  style={s.primaryBtn}
-                  onPress={() => handleUpdateStatus('arrived')}
-                >
-                  <Text style={s.primaryBtnText}>Arrived at Pickup</Text>
-                </TouchableOpacity>
-              )}
-
-              {ride.status === 'arrived' && (
-                <TouchableOpacity
-                  style={s.primaryBtn}
-                  onPress={() => handleUpdateStatus('picked_up')}
-                >
-                  <Text style={s.primaryBtnText}>Goods Loaded & Started</Text>
-                </TouchableOpacity>
-              )}
-
-              {ride.status === 'picked_up' && (
-                <TouchableOpacity
-                  style={[s.primaryBtn, { backgroundColor: '#059669' }]}
-                  onPress={() => handleUpdateStatus('delivered')}
-                >
-                  <Text style={s.primaryBtnText}>Delivered</Text>
-                </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[s.cancelBtn, (!canCancel || anySubmitting) && s.disabledCancelBtn, isCancelling && { opacity: 0.6 }]}
+                onPress={handleCancelAssignment}
+                disabled={!canCancel || anySubmitting}
+              >
+                {isCancelling ? (
+                  <ActivityIndicator color="#EF4444" size="small" />
+                ) : (
+                  <Text style={[s.cancelBtnText, (!canCancel || anySubmitting) && { color: '#94A3B8' }]}>
+                    Cancel Assignment
+                  </Text>
+                )}
+              </TouchableOpacity>
+              {!canCancel && (
+                <Text style={s.cancelHint}>
+                  Assignment locked. Cancellations are blocked within 4 hours of the scheduled time.
+                </Text>
               )}
             </>
+          )}
+
+          {ride.status === 'on_the_way' && (
+            <TouchableOpacity
+              style={[s.primaryBtn, anySubmitting && s.disabledBtn, isArriving && { opacity: 0.6 }]}
+              onPress={() => handleUpdateStatus('arrived')}
+              disabled={anySubmitting}
+            >
+              {isArriving ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={s.primaryBtnText}>Arrived at Pickup</Text>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {ride.status === 'arrived' && (
+            <TouchableOpacity
+              style={[s.primaryBtn, anySubmitting && s.disabledBtn, isPickingUp && { opacity: 0.6 }]}
+              onPress={() => handleUpdateStatus('picked_up')}
+              disabled={anySubmitting}
+            >
+              {isPickingUp ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={s.primaryBtnText}>Goods Loaded & Started</Text>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {ride.status === 'picked_up' && (
+            <TouchableOpacity
+              style={[s.primaryBtn, { backgroundColor: '#059669' }, anySubmitting && s.disabledBtn, isDelivering && { opacity: 0.6 }]}
+              onPress={() => handleUpdateStatus('delivered')}
+              disabled={anySubmitting}
+            >
+              {isDelivering ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={s.primaryBtnText}>Delivered</Text>
+              )}
+            </TouchableOpacity>
           )}
         </View>
       </ScrollView>
@@ -405,7 +446,7 @@ const s = StyleSheet.create({
   infoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   label: { fontSize: 11, fontWeight: '700', color: '#64748B', textTransform: 'uppercase', letterSpacing: 0.5 },
   value: { fontSize: 16, fontWeight: '700', color: '#0F172A', marginTop: 4 },
-  dateTimeValue: { fontSize: 15, fontWeight: '750', color: '#0F172A', marginTop: 4 },
+  dateTimeValue: { fontSize: 15, fontWeight: '700', color: '#0F172A', marginTop: 4 },
   countdownWrapper: { flexDirection: 'row', alignItems: 'center', marginTop: 12, backgroundColor: '#EFF6FF', padding: 10, borderRadius: 8 },
   countdownLabel: { fontSize: 12, fontWeight: '600', color: '#1A56DB' },
   countdownValue: { fontSize: 14, fontWeight: '800', color: '#1A56DB' },
@@ -442,7 +483,7 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  cancelBtnText: { color: '#EF4444', fontSize: 16, fontWeight: '850' },
+  cancelBtnText: { color: '#EF4444', fontSize: 16, fontWeight: '800' },
   disabledCancelBtn: { borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' },
   cancelHint: { fontSize: 11, color: '#EF4444', fontWeight: '600', textAlign: 'center', marginTop: 8, paddingHorizontal: 12, lineHeight: 16 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' }

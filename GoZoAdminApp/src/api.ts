@@ -17,6 +17,17 @@ export interface Driver {
   vehicle_number: string;
   vehicle_type: string;
   status: 'offline' | 'available' | 'in_ride';
+  // KYC & extended profile fields
+  gozo_phone?: string;
+  permanent_address?: string;
+  aadhaar_number?: string;
+  pan_number?: string;
+  dl_number?: string;
+  dl_expiry?: string;
+  bank_account_number?: string;
+  bank_ifsc?: string;
+  bank_account_name?: string;
+  created_at?: string;
 }
 
 export interface Ride {
@@ -295,6 +306,93 @@ export const triggerTestNotification = async (): Promise<{ success: boolean; err
     const response = await fetch(`${API_BASE_URL}/admin/test-fcm`, {
       method: 'POST',
       headers,
+    });
+    const data = await response.json();
+    return { success: data.success, error: data.error };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+// PATCH /admin/api/drivers/:id — update driver KYC/vehicle/bank details
+export const updateDriverProfile = async (
+  driverId: string,
+  fields: Partial<Omit<Driver, 'id' | 'status'>>
+): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/admin/api/drivers/${driverId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify(fields),
+    });
+    const data = await response.json();
+    return { success: data.success, error: data.error };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+};
+
+export interface DriverEarningTrip {
+  id: string;
+  created_at: string;
+  goods_type: string;
+  weight_kg: number;
+  accepted_price: number;
+  driver_earning: number;
+  gozo_cut: number;
+  pickup_address: string;
+  drop_address: string;
+  status: string;
+}
+
+export interface DriverPayment {
+  id: string;
+  amount: number;
+  notes?: string;
+  created_at: string;
+}
+
+export interface DriverEarningsSummary {
+  totalDriverEarning: number;
+  totalAccepted: number;
+  totalGozoCut: number;
+  totalPaid: number;
+  outstandingDebt: number;
+}
+
+// GET /admin/drivers/:driverId/earnings
+export const fetchDriverEarnings = async (
+  driverId: string
+): Promise<{ success: boolean; trips: DriverEarningTrip[]; payments: DriverPayment[]; summary: DriverEarningsSummary; error?: string }> => {
+  try {
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/admin/drivers/${driverId}/earnings`, { headers });
+    const data = await response.json();
+    return {
+      success: data.success,
+      trips: data.trips ?? [],
+      payments: data.payments ?? [],
+      summary: data.summary ?? { totalDriverEarning: 0, totalAccepted: 0, totalGozoCut: 0, totalPaid: 0, outstandingDebt: 0 },
+      error: data.error,
+    };
+  } catch (error: any) {
+    return { success: false, trips: [], payments: [], summary: { totalDriverEarning: 0, totalAccepted: 0, totalGozoCut: 0, totalPaid: 0, outstandingDebt: 0 }, error: error.message };
+  }
+};
+
+// POST /admin/drivers/:driverId/payments
+export const recordDriverPayment = async (
+  driverId: string,
+  amount: number,
+  notes?: string
+): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/admin/drivers/${driverId}/payments`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ amount, notes }),
     });
     const data = await response.json();
     return { success: data.success, error: data.error };

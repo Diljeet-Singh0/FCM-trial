@@ -30,8 +30,8 @@ export const useLocation = (): UseLocationResult => {
   const smoothedRef = useRef<Coordinate | null>(null);
   const GPS_ACCURACY_MAX = 30;
   const STATIONARY_SPEED_MAX = 0.5; // m/s
-  const STATIONARY_DIST_MIN = 0.008; // km (~8m)
-  const SMOOTH_FACTOR = 0.35;
+  const STATIONARY_DIST_MIN = 0.003; // km (~3m) — tighter threshold to reduce lag
+  const SMOOTH_FACTOR = 0.75; // Higher = faster response to GPS (was 0.35)
 
   const requestPermission = useCallback(async (): Promise<boolean> => {
     if (Platform.OS === 'android') {
@@ -157,9 +157,9 @@ export const useLocation = (): UseLocationResult => {
       },
       {
         enableHighAccuracy: true,
-        distanceFilter: 10,
-        interval: 2000,
-        fastestInterval: 1000,
+        distanceFilter: 3, // Fire every 3m for snappy tracking (was 10m)
+        interval: 1000, // Android: update every 1s (was 2s)
+        fastestInterval: 500, // Android: fastest 500ms (was 1s)
       },
     );
   }, []);

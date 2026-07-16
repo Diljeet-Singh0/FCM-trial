@@ -37,4 +37,4 @@ export const CAMERA_ZOOM_PREVIEW = 14;
 export const CAMERA_ZOOM_DEFAULT = 15;
 export const CAMERA_PITCH_NAVIGATING = 60;
 export const CAMERA_PITCH_DEFAULT = 0;
-export const CAMERA_ANIMATION_DURATION = 1000;
+export const CAMERA_ANIMATION_DURATION = 500; // Reduced from 1000ms for snappier camera follow

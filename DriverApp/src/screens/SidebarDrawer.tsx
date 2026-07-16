@@ -253,7 +253,7 @@ const styles = StyleSheet.create({
   },
   statusText: {
     fontSize: 12,
-    fontWeight: '850',
+    fontWeight: '800',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
@@ -283,7 +283,7 @@ const styles = StyleSheet.create({
   menuLabel: {
     flex: 1,
     fontSize: 16,
-    fontWeight: '750',
+    fontWeight: '700',
     color: '#F1F5F9',
     marginLeft: 8,
     letterSpacing: 0.1,

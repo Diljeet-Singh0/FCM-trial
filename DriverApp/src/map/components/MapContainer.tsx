@@ -35,6 +35,7 @@ interface MapContainerProps {
   alternativeRoutes?: Route[];
   selectedRouteIndex?: number;
   navigationMode: NavigationMode;
+  currentRouteIndex?: number; // Driver's snapped index on route.coordinates
   onMapReady?: () => void;
 }
 
@@ -48,29 +49,57 @@ const MapContainer: React.FC<MapContainerProps> = ({
   alternativeRoutes = [],
   selectedRouteIndex = 0,
   navigationMode,
+  currentRouteIndex,
 }) => {
   const mapRef = useRef<MapView>(null);
   const cameraRef = useRef<Camera>(null);
 
   const activeLocation = simulatedLocation || currentLocation;
 
-  // Build main route GeoJSON
-  const routeGeoJSON = useMemo(() => {
+  // Build remaining route GeoJSON (blue active path)
+  const routeRemainingGeoJSON = useMemo(() => {
     if (!route) return null;
-    return {
-      type: 'FeatureCollection' as const,
-      features: [
-        {
+    const isNavigating = navigationMode === NavigationMode.NAVIGATING && typeof currentRouteIndex === 'number';
+    const coords = isNavigating
+      ? route.rawCoordinates.slice(currentRouteIndex)
+      : route.rawCoordinates;
+    if (coords.length < 2) {
+      // Fallback to full route if sliced too short
+      return {
+        type: 'FeatureCollection' as const,
+        features: [{
           type: 'Feature' as const,
           properties: {isMain: true},
-          geometry: {
-            type: 'LineString' as const,
-            coordinates: route.rawCoordinates,
-          },
-        },
-      ],
+          geometry: {type: 'LineString' as const, coordinates: route.rawCoordinates},
+        }],
+      };
+    }
+    return {
+      type: 'FeatureCollection' as const,
+      features: [{
+        type: 'Feature' as const,
+        properties: {isRemaining: true},
+        geometry: {type: 'LineString' as const, coordinates: coords},
+      }],
     };
-  }, [route]);
+  }, [route, currentRouteIndex, navigationMode]);
+
+  // Build traveled route GeoJSON (dim path behind driver)
+  const routeTraveledGeoJSON = useMemo(() => {
+    if (!route || navigationMode !== NavigationMode.NAVIGATING || typeof currentRouteIndex !== 'number' || currentRouteIndex < 1) {
+      return null;
+    }
+    const coords = route.rawCoordinates.slice(0, currentRouteIndex + 1);
+    if (coords.length < 2) return null;
+    return {
+      type: 'FeatureCollection' as const,
+      features: [{
+        type: 'Feature' as const,
+        properties: {isTraveled: true},
+        geometry: {type: 'LineString' as const, coordinates: coords},
+      }],
+    };
+  }, [route, currentRouteIndex, navigationMode]);
 
   // Build alternative routes GeoJSON
   const altRoutesGeoJSON = useMemo(() => {
@@ -90,23 +119,23 @@ const MapContainer: React.FC<MapContainerProps> = ({
     };
   }, [alternativeRoutes, selectedRouteIndex]);
 
-  // Route outline glow effect GeoJSON
+  // Route glow GeoJSON — only covers the remaining path
   const routeGlowGeoJSON = useMemo(() => {
     if (!route) return null;
+    const isNavigating = navigationMode === NavigationMode.NAVIGATING && typeof currentRouteIndex === 'number';
+    const coords = isNavigating
+      ? route.rawCoordinates.slice(currentRouteIndex)
+      : route.rawCoordinates;
+    if (coords.length < 2) return null;
     return {
       type: 'FeatureCollection' as const,
-      features: [
-        {
-          type: 'Feature' as const,
-          properties: {},
-          geometry: {
-            type: 'LineString' as const,
-            coordinates: route.rawCoordinates,
-          },
-        },
-      ],
+      features: [{
+        type: 'Feature' as const,
+        properties: {},
+        geometry: {type: 'LineString' as const, coordinates: coords},
+      }],
     };
-  }, [route]);
+  }, [route, currentRouteIndex, navigationMode]);
 
   // Fit camera to show entire route
   useEffect(() => {
@@ -217,9 +246,26 @@ const MapContainer: React.FC<MapContainerProps> = ({
           </ShapeSource>
         )}
 
-        {/* Main route */}
-        {routeGeoJSON && (
-          <ShapeSource id="routeSource" shape={routeGeoJSON}>
+        {/* Traveled route (dim, dark path behind driver) */}
+        {routeTraveledGeoJSON && (
+          <ShapeSource id="routeTraveledSource" shape={routeTraveledGeoJSON}>
+            <LineLayer
+              id="routeTraveledLine"
+              style={{
+                lineColor: colors.routeTraveled,
+                lineWidth: 5,
+                lineCap: 'round',
+                lineJoin: 'round',
+                lineOpacity: 0.45,
+              }}
+              belowLayerID="routeLine"
+            />
+          </ShapeSource>
+        )}
+
+        {/* Remaining route (active blue path) */}
+        {routeRemainingGeoJSON && (
+          <ShapeSource id="routeSource" shape={routeRemainingGeoJSON}>
             <LineLayer
               id="routeLine"
               style={{

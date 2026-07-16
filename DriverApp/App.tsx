@@ -399,6 +399,8 @@ const App = () => {
   const [builtyImage, setBuiltyImage] = useState<string | null>(null);
   const [showBuiltyPreview, setShowBuiltyPreview] = useState(false);
   const [isUploadingBuilty, setIsUploadingBuilty] = useState(false);
+  const [isUpdatingPickedUp, setIsUpdatingPickedUp] = useState(false);
+  const [isUpdatingOnTheWay, setIsUpdatingOnTheWay] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showBuiltyCamera, setShowBuiltyCamera] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -458,6 +460,47 @@ const App = () => {
     };
     loadPersistedState();
   }, []);
+
+  // ─── Active Ride Recovery: verify restored ride with backend on startup ───
+  // Runs once after persisted state is loaded. If the ride is no longer
+  // assigned to this driver (completed/taken by someone else), clears stale state.
+  useEffect(() => {
+    if (!isStateLoaded) return;
+    if (acceptStatus !== 'accepted' || !incomingRequest?.requestId || !transporterId) return;
+
+    const verifyActiveRide = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/gozo/driver-location/${incomingRequest.requestId}`);
+        const data = await res.json();
+
+        if (!data.success) {
+          // Ride no longer exists — clear stale state silently
+          console.warn('[GoZo] Persisted ride not found on server, clearing state.');
+          setAcceptStatus(null);
+          setIncomingRequest(null);
+          setTripStatus('matched');
+          return;
+        }
+
+        const activeStatuses = ['matched', 'on_the_way', 'arrived', 'picked_up'];
+        if (!activeStatuses.includes(data.location?.status)) {
+          // Ride is done or cancelled — clear stale state
+          console.log('[GoZo] Persisted ride status:', data.location?.status, '— clearing.');
+          setAcceptStatus(null);
+          setIncomingRequest(null);
+          setTripStatus('matched');
+        } else {
+          console.log('[GoZo] Resumed active ride:', incomingRequest.requestId, 'status:', data.location?.status);
+        }
+      } catch (err: any) {
+        console.warn('[GoZo] Active ride verification failed:', err.message);
+        // Network error — keep existing state, driver will see the ride
+      }
+    };
+
+    verifyActiveRide();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStateLoaded]);
 
   // Sync online/offline status + GPS location with the backend
   useEffect(() => {
@@ -710,27 +753,88 @@ const App = () => {
     };
   }, [acceptStatus, incomingRequest, transporterId, tripStatus]);
 
+  // ─── Helper: reset all ride state and return driver to Home screen ───
+  const resetRideState = (message?: string) => {
+    setAcceptStatus(null);
+    setIncomingRequest(null);
+    setTripStatus('matched');
+    setBuiltyImage(null);
+    setShowBuiltyPreview(false);
+    if (transporterId) {
+      updateDriverDbStatus(transporterId, isOnline ? 'available' : 'offline');
+    }
+    if (navigationRef.isReady()) {
+      navigationRef.reset({ index: 0, routes: [{ name: 'Home' }] });
+    }
+    if (message) {
+      Alert.alert('Ride Unavailable', message);
+    }
+  };
+
   const handleAccept = async () => {
     if (!incomingRequest || !transporterId) return;
     try {
       const response = await acceptRequest(incomingRequest.requestId, transporterId);
-    if (response.success) {
-      setAcceptStatus('accepted');
-      setTripStatus('matched');
-      updateDriverDbStatus(transporterId, 'in_ride');
-    } else {
-      Alert.alert(t.error, response.error ?? 'Could not accept request');
-    }
-  } catch (err) { Alert.alert(t.error, t.connectionFailed); }
+      if (response.success) {
+        try {
+          // 1. Update DB status first — await so any error is caught below
+          await updateDriverDbStatus(transporterId, 'in_ride');
+        } catch (dbErr: any) {
+          // DB status update failed — log but don't crash; ride is still accepted
+          console.error('[GoZo] updateDriverDbStatus failed after acceptance:', dbErr?.message);
+        }
+        // 2. Update local state — persisted automatically by the useEffects above
+        setAcceptStatus('accepted');
+        setTripStatus('matched');
+      } else {
+        // Ride was already accepted by another driver (race condition)
+        const errMsg = response.error ?? '';
+        const alreadyTaken =
+          errMsg.toLowerCase().includes('no longer available') ||
+          errMsg.toLowerCase().includes('not assigned') ||
+          errMsg.toLowerCase().includes('already accepted') ||
+          errMsg.toLowerCase().includes('longer available');
+        if (alreadyTaken) {
+          resetRideState('This ride was accepted by another driver before you.');
+        } else {
+          Alert.alert(t.error, errMsg || 'Could not accept request');
+        }
+      }
+    } catch (err) { Alert.alert(t.error, t.connectionFailed); }
   };
 
   const handleUpdateStatus = async (status: 'picked_up' | 'on_the_way' | 'completed') => {
     if (!incomingRequest || !transporterId) return;
-    const response = await updateTripStatus(incomingRequest.requestId, transporterId, status);
-    if (response.success) {
-      setTripStatus(status);
-    } else {
-      Alert.alert(t.error, response.error ?? 'Could not update status');
+
+    let setter: ((val: boolean) => void) | null = null;
+    if (status === 'picked_up') {
+      if (isUpdatingPickedUp) return;
+      setter = setIsUpdatingPickedUp;
+    } else if (status === 'on_the_way') {
+      if (isUpdatingOnTheWay) return;
+      setter = setIsUpdatingOnTheWay;
+    }
+
+    if (setter) setter(true);
+    try {
+      const response = await updateTripStatus(incomingRequest.requestId, transporterId, status);
+      if (response.success) {
+        setTripStatus(status);
+      } else {
+        // Ride belongs to another driver — auto-redirect to Home
+        const errMsg = response.error ?? '';
+        const notAssigned =
+          errMsg.toLowerCase().includes('not assigned') ||
+          errMsg.toLowerCase().includes('no longer available') ||
+          errMsg.toLowerCase().includes('already accepted');
+        if (notAssigned) {
+          resetRideState('This ride was accepted by another driver before you.');
+        } else {
+          Alert.alert(t.error, errMsg || 'Could not update status');
+        }
+      }
+    } finally {
+      if (setter) setter(false);
     }
   };
 
@@ -752,30 +856,45 @@ const App = () => {
   };
 
   const uploadBuiltyPhoto = async (base64Img: string) => {
-    if (!incomingRequest || !transporterId) return;
+    if (!incomingRequest || !transporterId || isUploadingBuilty) return;
     setIsUploadingBuilty(true);
-    const response = await uploadBuilty(incomingRequest.requestId, transporterId, base64Img);
-    setIsUploadingBuilty(false);
-    if (response.success) {
-      setShowBuiltyPreview(false);
-      setTripStatus('completed');
-      Alert.alert(t.tripCompletedTitle, t.tripCompletedMsg, [
-        {
-          text: t.ok,
-          onPress: () => {
-            setAcceptStatus(null);
-            setIncomingRequest(null);
-            setTripStatus('matched');
-            setBuiltyImage(null);
-            updateDriverDbStatus(transporterId, isOnline ? 'available' : 'offline');
-            if (navigationRef.isReady()) {
-              navigationRef.reset({ index: 0, routes: [{ name: 'Home' }] });
+    try {
+      const response = await uploadBuilty(incomingRequest.requestId, transporterId, base64Img);
+      if (response.success) {
+        setShowBuiltyPreview(false);
+        setTripStatus('completed');
+        Alert.alert(t.tripCompletedTitle, t.tripCompletedMsg, [
+          {
+            text: t.ok,
+            onPress: () => {
+              setAcceptStatus(null);
+              setIncomingRequest(null);
+              setTripStatus('matched');
+              setBuiltyImage(null);
+              updateDriverDbStatus(transporterId, isOnline ? 'available' : 'offline');
+              if (navigationRef.isReady()) {
+                navigationRef.reset({ index: 0, routes: [{ name: 'Home' }] });
+              }
             }
           }
+        ]);
+      } else {
+        // Ride belongs to another driver — auto-redirect to Home
+        const errMsg = response.error ?? '';
+        const notAssigned =
+          errMsg.toLowerCase().includes('not assigned') ||
+          errMsg.toLowerCase().includes('no longer available') ||
+          errMsg.toLowerCase().includes('already accepted');
+        if (notAssigned) {
+          resetRideState('This ride was accepted by another driver before you.');
+        } else {
+          Alert.alert(t.uploadFailed, errMsg || t.couldNotUpload);
         }
-      ]);
-    } else {
-      Alert.alert(t.uploadFailed, response.error ?? t.couldNotUpload);
+      }
+    } catch (err: any) {
+      Alert.alert(t.error, err.message || t.connectionFailed);
+    } finally {
+      setIsUploadingBuilty(false);
     }
   };
 
@@ -856,6 +975,18 @@ const App = () => {
           setShowSettings(false);
           setDriverName('Driver');
           setVehicleInfo('Vehicle');
+          setIncomingRequest(null);
+          setAcceptStatus(null);
+          setTripStatus('matched');
+          setBuiltyImage(null);
+          setShowBuiltyPreview(false);
+          setIsUploadingBuilty(false);
+          setShowHistory(false);
+          setShowBuiltyCamera(false);
+          setShowSidebar(false);
+          setShowScheduledRides(false);
+          setSelectedScheduledRideId(null);
+          setActiveRequests([]);
         }}
         language={language}
         setLanguage={setLanguage}
@@ -910,10 +1041,16 @@ const App = () => {
                   showBuiltyPreview={showBuiltyPreview}
                   setShowBuiltyPreview={setShowBuiltyPreview}
                   isUploadingBuilty={isUploadingBuilty}
+                  setIsUploadingBuilty={setIsUploadingBuilty}
+                  isUpdatingPickedUp={isUpdatingPickedUp}
+                  isUpdatingOnTheWay={isUpdatingOnTheWay}
                   setShowHistory={setShowHistory}
                   setShowSettings={setShowSettings}
                   showSidebar={showSidebar}
                   setShowSidebar={setShowSidebar}
+                  setShowBuiltyCamera={setShowBuiltyCamera}
+                  setSelectedScheduledRideId={setSelectedScheduledRideId}
+                  setActiveRequests={setActiveRequests}
                   isStateLoaded={isStateLoaded}
                   language={language}
                   t={t}
@@ -925,8 +1062,6 @@ const App = () => {
                   handleUpdateStatus={handleUpdateStatus}
                   onCaptureBuilty={onCaptureBuilty}
                   uploadBuiltyPhoto={uploadBuiltyPhoto}
-                  showBuiltyCamera={showBuiltyCamera}
-                  setShowBuiltyCamera={setShowBuiltyCamera}
                   setDriverName={setDriverName}
                   setVehicleInfo={setVehicleInfo}
                   setShowScheduledRides={setShowScheduledRides}
@@ -1258,6 +1393,8 @@ const ActiveDeliveryView: React.FC<{
   builtyImage: string | null;
   setBuiltyImage: (val: string | null) => void;
   isUploadingBuilty: boolean;
+  isUpdatingPickedUp: boolean;
+  isUpdatingOnTheWay: boolean;
   onCaptureBuilty: () => void;
   uploadBuiltyPhoto: (img: string) => void;
   handleUpdateStatus: (status: 'picked_up' | 'on_the_way' | 'completed') => void;
@@ -1274,6 +1411,8 @@ const ActiveDeliveryView: React.FC<{
   builtyImage,
   setBuiltyImage,
   isUploadingBuilty,
+  isUpdatingPickedUp,
+  isUpdatingOnTheWay,
   onCaptureBuilty,
   uploadBuiltyPhoto,
   handleUpdateStatus,
@@ -1421,13 +1560,29 @@ const ActiveDeliveryView: React.FC<{
           </View>
 
           {tripStatus === 'matched' && (
-            <TouchableOpacity style={s.reachedBtn} onPress={() => handleUpdateStatus('picked_up')}>
-              <Text style={s.reachedBtnText}>{t.goodsPickedUp}</Text>
+            <TouchableOpacity
+              style={[s.reachedBtn, isUpdatingPickedUp && { opacity: 0.6 }]}
+              onPress={() => handleUpdateStatus('picked_up')}
+              disabled={isUpdatingPickedUp}
+            >
+              {isUpdatingPickedUp ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={s.reachedBtnText}>{t.goodsPickedUp}</Text>
+              )}
             </TouchableOpacity>
           )}
           {tripStatus === 'picked_up' && (
-            <TouchableOpacity style={[s.reachedBtn, { backgroundColor: '#1A56DB' }]} onPress={() => handleUpdateStatus('on_the_way')}>
-              <Text style={s.reachedBtnText}>{t.startTrip}</Text>
+            <TouchableOpacity
+              style={[s.reachedBtn, { backgroundColor: '#1A56DB' }, isUpdatingOnTheWay && { opacity: 0.6 }]}
+              onPress={() => handleUpdateStatus('on_the_way')}
+              disabled={isUpdatingOnTheWay}
+            >
+              {isUpdatingOnTheWay ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={s.reachedBtnText}>{t.startTrip}</Text>
+              )}
             </TouchableOpacity>
           )}
           {tripStatus === 'on_the_way' && (
@@ -1498,6 +1653,7 @@ const HomeScreen = ({
   transporterId,
   setTransporterId,
   activeRequests,
+  setActiveRequests,
   tripStatus,
   setTripStatus,
   isOnline,
@@ -1507,10 +1663,15 @@ const HomeScreen = ({
   showBuiltyPreview,
   setShowBuiltyPreview,
   isUploadingBuilty,
+  setIsUploadingBuilty,
+  isUpdatingPickedUp,
+  isUpdatingOnTheWay,
   setShowHistory,
   setShowSettings,
   showSidebar,
   setShowSidebar,
+  setShowBuiltyCamera,
+  setSelectedScheduledRideId,
   isStateLoaded,
   language,
   t,
@@ -1533,6 +1694,7 @@ const HomeScreen = ({
   transporterId: string | null;
   setTransporterId: (id: string | null) => void;
   activeRequests: ActiveRequest[];
+  setActiveRequests: (reqs: ActiveRequest[]) => void;
   tripStatus: 'matched' | 'picked_up' | 'on_the_way' | 'completed';
   setTripStatus: (status: 'matched' | 'picked_up' | 'on_the_way' | 'completed') => void;
   isOnline: boolean;
@@ -1542,10 +1704,15 @@ const HomeScreen = ({
   showBuiltyPreview: boolean;
   setShowBuiltyPreview: (show: boolean) => void;
   isUploadingBuilty: boolean;
+  setIsUploadingBuilty: (val: boolean) => void;
+  isUpdatingPickedUp: boolean;
+  isUpdatingOnTheWay: boolean;
   setShowHistory: (show: boolean) => void;
   setShowSettings: (show: boolean) => void;
   showSidebar: boolean;
   setShowSidebar: (show: boolean) => void;
+  setShowBuiltyCamera: (show: boolean) => void;
+  setSelectedScheduledRideId: (id: string | null) => void;
   isStateLoaded: boolean;
   language: Language;
   t: any;
@@ -1666,6 +1833,8 @@ const HomeScreen = ({
           builtyImage={builtyImage}
           setBuiltyImage={setBuiltyImage}
           isUploadingBuilty={isUploadingBuilty}
+          isUpdatingPickedUp={isUpdatingPickedUp}
+          isUpdatingOnTheWay={isUpdatingOnTheWay}
           onCaptureBuilty={onCaptureBuilty}
           uploadBuiltyPhoto={uploadBuiltyPhoto}
           handleUpdateStatus={handleUpdateStatus}
@@ -1840,6 +2009,18 @@ const HomeScreen = ({
                 setIsOnline(false);
                 setDriverName('Driver');
                 setVehicleInfo('Vehicle');
+                setIncomingRequest(null);
+                setAcceptStatus(null);
+                setTripStatus('matched');
+                setBuiltyImage(null);
+                setShowBuiltyPreview(false);
+                setIsUploadingBuilty(false);
+                setShowHistory(false);
+                setShowBuiltyCamera(false);
+                setShowSidebar(false);
+                setShowScheduledRides(false);
+                setSelectedScheduledRideId(null);
+                setActiveRequests([]);
               },
             },
           ]);
@@ -1863,8 +2044,8 @@ const s = StyleSheet.create({
   driverName: { fontSize: 18, fontWeight: '800', color: '#0F172A' },
   vehicleInfo: { fontSize: 13, color: '#64748B', marginTop: 2, fontWeight: '600' },
   onlineBadge: { backgroundColor: '#D1FAE5', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 1, borderColor: '#A7F3D0' },
-  onlineText: { color: '#065F46', fontSize: 13, fontWeight: '850', textTransform: 'uppercase', letterSpacing: 0.5 },
-  sectionTitle: { fontSize: 18, fontWeight: '850', color: '#0F172A', marginHorizontal: 20, marginTop: 24, marginBottom: 14, letterSpacing: 0.2 },
+  onlineText: { color: '#065F46', fontSize: 13, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
+  sectionTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A', marginHorizontal: 20, marginTop: 24, marginBottom: 14, letterSpacing: 0.2 },
   bookingCard: { 
     marginHorizontal: 20, 
     backgroundColor: '#FFFFFF', 
@@ -1884,7 +2065,7 @@ const s = StyleSheet.create({
   customerName: { fontSize: 18, fontWeight: '800', color: '#0F172A', marginTop: 2 },
   payoutAmount: { fontSize: 20, fontWeight: '900', color: '#0F172A', marginTop: 2 },
   goodsTypeBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F1F5F9', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
-  goodsTypeText: { fontSize: 13, fontWeight: '750', color: '#475569' },
+  goodsTypeText: { fontSize: 13, fontWeight: '700', color: '#475569' },
   routeContainer: { flexDirection: 'row', paddingVertical: 14, borderTopWidth: 1.5, borderTopColor: '#F1F5F9' },
   routeDots: { alignItems: 'center', marginRight: 14, paddingTop: 4 },
   greenDot: { width: 14, height: 14, borderRadius: 7, backgroundColor: '#10B981', borderWidth: 3, borderColor: '#D1FAE5' },
@@ -1928,11 +2109,11 @@ const s = StyleSheet.create({
   adPriceInline: { fontSize: 22, fontWeight: '900', color: '#10B981' },
   miniRouteRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
   miniRouteDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#10B981', marginRight: 10 },
-  miniRouteText: { fontSize: 14, color: '#334155', fontWeight: '650', flex: 1 },
+  miniRouteText: { fontSize: 14, color: '#334155', fontWeight: '600', flex: 1 },
   miniRouteLine: { width: 2, height: 14, backgroundColor: '#E2E8F0', marginLeft: 4 },
   inlineProgressCard: { marginTop: 10, paddingVertical: 10 },
   liveBadge: { backgroundColor: '#D1FAE5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 5 },
-  liveText: { color: '#065F46', fontSize: 12, fontWeight: '850', textTransform: 'uppercase', letterSpacing: 0.5 },
+  liveText: { color: '#065F46', fontSize: 12, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
   adProgressHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
   adProgressTitle: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
   adProgressPercent: { fontSize: 15, fontWeight: '800', color: '#6366F1' },
@@ -1943,10 +2124,10 @@ const s = StyleSheet.create({
   completedBanner: { marginTop: 14, backgroundColor: '#D1FAE5', borderRadius: 18, padding: 18, borderWidth: 1, borderColor: '#A7F3D0', alignItems: 'center' },
   completedText: { color: '#065F46', fontWeight: '800', fontSize: 16 },
   waitingCard: { marginHorizontal: 20, alignItems: 'center', paddingVertical: 64, backgroundColor: '#FFFFFF', borderRadius: 22, elevation: 2, borderWidth: 1.5, borderColor: '#EEF2F6', shadowColor: '#6366F1', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.03, shadowRadius: 8 },
-  waitingTitle: { fontSize: 18, fontWeight: '850', color: '#0F172A', marginTop: 14 },
+  waitingTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A', marginTop: 14 },
   waitingSub: { fontSize: 14, color: '#64748B', marginTop: 6, fontWeight: '500', textAlign: 'center', paddingHorizontal: 24 },
   screenHeaderBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1.5, borderBottomColor: '#EEF2F6' },
-  screenHeaderTitle: { fontSize: 18, fontWeight: '850', color: '#0F172A' },
+  screenHeaderTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A' },
   screenHeaderSub: { fontSize: 13, color: '#64748B', fontWeight: '500', marginTop: 1 },
   backBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center', borderRadius: 20, backgroundColor: '#F1F5F9' },
   backArrow: { fontSize: 20, color: '#0F172A', fontWeight: '700' },
@@ -1974,14 +2155,14 @@ const s = StyleSheet.create({
   builtyModalCard: { backgroundColor: '#FFFFFF', borderRadius: 28, padding: 22, width: '100%', maxWidth: 400, alignItems: 'center' },
   builtyModalTitle: { fontSize: 22, fontWeight: '900', color: '#0F172A', marginBottom: 6 },
   builtyModalSubtitle: { fontSize: 14, color: '#64748B', marginBottom: 18, fontWeight: '500' },
-  builtyPreviewImage: { width: '100%', height: 300, borderRadius: 20, backgroundColor: '#F1F5F9', marginBottom: 18 },
+  builtyPreviewImage: { width: '100%', height: 300, borderRadius: 20, backgroundColor: '#F1F5F9', marginBottom: 18, overflow: 'hidden' } as const,
   builtyModalActions: { flexDirection: 'row', gap: 12, width: '100%' },
   builtyRetakeBtn: { flex: 1, borderWidth: 2, borderColor: '#E2E8F0', borderRadius: 16, paddingVertical: 16, backgroundColor: '#FFF' },
   builtyRetakeBtnText: { textAlign: 'center', color: '#475569', fontSize: 14, fontWeight: '800' },
   builtyConfirmBtn: { flex: 1.5, backgroundColor: '#10B981', borderRadius: 16, paddingVertical: 16, elevation: 4, shadowColor: '#10B981', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, justifyContent: 'center', alignItems: 'center' },
   builtyConfirmBtnText: { color: '#FFFFFF', textAlign: 'center', fontSize: 14, fontWeight: '800' },
   builtyCloseBtn: { marginTop: 14, paddingVertical: 8 },
-  builtyCloseBtnText: { color: '#94A3B8', fontSize: 14, fontWeight: '750' },
+  builtyCloseBtnText: { color: '#94A3B8', fontSize: 14, fontWeight: '700' },
   historyBtnIcon: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   historyBtn: { backgroundColor: '#6366F1', borderRadius: 16, paddingVertical: 16, marginTop: 18, elevation: 4, shadowColor: '#6366F1', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8 },
   historyBtnText: { color: '#FFFFFF', textAlign: 'center', fontSize: 16, fontWeight: '800', letterSpacing: 0.2 },
@@ -1999,7 +2180,7 @@ const s = StyleSheet.create({
   pricingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
   pricingLabel: { fontSize: 13, color: '#475569', fontWeight: '500' },
   pricingSublabel: { fontSize: 10, color: '#94A3B8', marginTop: 1 },
-  pricingValue: { fontSize: 14, fontWeight: '750', color: '#0F172A' },
+  pricingValue: { fontSize: 14, fontWeight: '700', color: '#0F172A' },
   pricingDivider: { height: 1, backgroundColor: '#E2E8F0', marginVertical: 6 },
   additionalTitle: { fontSize: 10, fontWeight: '700', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
 });

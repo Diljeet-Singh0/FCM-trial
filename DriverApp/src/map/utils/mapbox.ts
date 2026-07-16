@@ -130,15 +130,24 @@ export const reverseGeocode = async (
 };
 
 /**
- * Fetch a route between source and destination
+ * Fetch a route between source and destination.
+ * @param bearing - Optional driver heading in degrees (0–360). When provided,
+ *   the Directions API will prefer roads the driver is already facing, preventing
+ *   backtrack/U-turn reroutes. Destination is left unconstrained (empty slot).
  */
 export const fetchRoute = async (
   source: Coordinate,
   destination: Coordinate,
   profile: RouteProfile = RouteProfile.DRIVING_TRAFFIC,
+  bearing?: number,
 ): Promise<Route | null> => {
   try {
-    const url = `${MAPBOX_DIRECTIONS_URL}/${profile}/${source.longitude},${source.latitude};${destination.longitude},${destination.latitude}?geometries=geojson&overview=full&steps=true&banner_instructions=true&voice_instructions=true&annotations=speed,duration,distance&access_token=${MAPBOX_ACCESS_TOKEN}`;
+    // Build bearing hint for origin only: "{angle},{deviation};;" — destination unconstrained
+    const bearingParam = typeof bearing === 'number'
+      ? `&bearings=${Math.round(bearing) % 360},60;;`
+      : '';
+
+    const url = `${MAPBOX_DIRECTIONS_URL}/${profile}/${source.longitude},${source.latitude};${destination.longitude},${destination.latitude}?geometries=geojson&overview=full&steps=true&banner_instructions=true&voice_instructions=true&annotations=speed,duration,distance${bearingParam}&access_token=${MAPBOX_ACCESS_TOKEN}`;
 
     const response = await fetch(url);
     const data = await response.json();
@@ -169,6 +178,7 @@ export const fetchRoute = async (
     return null;
   }
 };
+
 
 /**
  * Fetch multiple alternative routes
