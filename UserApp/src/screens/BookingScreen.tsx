@@ -440,19 +440,6 @@ const BookingScreen = ({ company, onBack, onConfirmBooking, isScheduling = false
         {vehicle.id === 'auto' ? (
           <View style={s.breakdownWrap}>
             <View style={s.breakdownRow}>
-              <Text style={s.breakdownLabel}>Pricing Model</Text>
-              <Text style={s.breakdownValBold}>3-Wheeler Auto (Local)</Text>
-            </View>
-            <View style={s.breakdownDivider} />
-            <View style={s.breakdownRow}>
-              <Text style={s.breakdownLabel}>Rate per km</Text>
-              <Text style={s.breakdownVal}>₹45</Text>
-            </View>
-            <View style={s.breakdownRow}>
-              <Text style={s.breakdownLabel}>Minimum Charge</Text>
-              <Text style={s.breakdownVal}>₹200</Text>
-            </View>
-            <View style={s.breakdownRow}>
               <Text style={s.breakdownLabel}>Waiting Charges</Text>
               <Text style={s.breakdownVal}>₹50 / 30 min (First 15 min free)</Text>
             </View>

@@ -128,17 +128,14 @@ const WaitingScreen = ({ onBack, companyName, requestId, onDriverAccepted }: Pro
           <View style={s.priceCard}>
             <View style={s.priceHeader}>
               <Text style={s.priceHeaderIcon}>🛺</Text>
-              <Text style={s.priceTitle}>Pricing Model (3-Wheeler Auto)</Text>
+              <Text style={s.priceTitle}>Pricing Details</Text>
             </View>
 
             <View style={s.priceRow}>
-              <Text style={s.priceLabel}>Base Rate</Text>
-              <Text style={s.priceValue}>₹45 / km</Text>
-            </View>
-
-            <View style={s.priceRow}>
-              <Text style={s.priceLabel}>Minimum Charge</Text>
-              <Text style={[s.priceValue, { color: '#10B981', fontWeight: '700' }]}>₹200</Text>
+              <Text style={s.priceLabel}>Freight Price</Text>
+              <Text style={[s.priceValue, { color: '#10B981', fontWeight: '800', fontSize: 18 }]}>
+                ₹{request.accepted_price || 'Calculating...'}
+              </Text>
             </View>
 
             <View style={s.priceDivider} />

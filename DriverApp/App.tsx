@@ -1250,17 +1250,17 @@ const BookingCard = ({
         <View style={s.pricingCardContainer}>
           <View style={s.pricingCardHeader}>
             <Text style={s.pricingCardIcon}>🛺</Text>
-            <Text style={s.pricingCardTitle}>{t.autoCharges}</Text>
+            <Text style={s.pricingCardTitle}>Pricing Details</Text>
           </View>
 
           <View style={s.pricingRow}>
-            <Text style={s.pricingLabel}>{t.ratePerKm}</Text>
-            <Text style={s.pricingValue}>₹45</Text>
+            <Text style={s.pricingLabel}>Total Ride Price</Text>
+            <Text style={[s.pricingValue, { fontWeight: '700' }]}>₹{totalPriceVal}</Text>
           </View>
 
           <View style={s.pricingRow}>
-            <Text style={s.pricingLabel}>{t.minimumCharge}</Text>
-            <Text style={[s.pricingValue, { color: '#059669', fontWeight: '800' }]}>₹200</Text>
+            <Text style={s.pricingLabel}>{t.estimatedPayout}</Text>
+            <Text style={[s.pricingValue, { fontWeight: '900', fontSize: 16, color: '#10B981' }]}>₹{payoutVal}</Text>
           </View>
 
           <View style={s.pricingDivider} />
@@ -1280,14 +1280,6 @@ const BookingCard = ({
           <View style={s.pricingCardHeader}>
             <Text style={s.pricingCardIcon}>🚛</Text>
             <Text style={s.pricingCardTitle}>{t.pricingDetails}</Text>
-          </View>
-          <View style={s.pricingRow}>
-            <Text style={s.pricingLabel}>{t.ratePerKm || 'Rate per km'}</Text>
-            <Text style={s.pricingValue}>₹50</Text>
-          </View>
-          <View style={s.pricingRow}>
-            <Text style={s.pricingLabel}>{t.minimumCharge || 'Minimum payout'}</Text>
-            <Text style={[s.pricingValue, { color: '#059669', fontWeight: '800' }]}>₹500</Text>
           </View>
           <View style={s.pricingRow}>
             <Text style={s.pricingLabel}>Total Ride Price</Text>
@@ -1539,14 +1531,6 @@ const ActiveDeliveryView: React.FC<{
               <View style={s.pricingCardHeader}>
                 <Text style={s.pricingCardIcon}>🚛</Text>
                 <Text style={s.pricingCardTitle}>{t.pricingDetails}</Text>
-              </View>
-              <View style={s.pricingRow}>
-                <Text style={s.pricingLabel}>{t.ratePerKm || 'Rate per km'}</Text>
-                <Text style={s.pricingValue}>₹50</Text>
-              </View>
-              <View style={s.pricingRow}>
-                <Text style={s.pricingLabel}>{t.minimumCharge || 'Minimum payout'}</Text>
-                <Text style={[s.pricingValue, { color: '#059669', fontWeight: '800' }]}>₹500</Text>
               </View>
               <View style={s.pricingRow}>
                 <Text style={s.pricingLabel}>Total Ride Price</Text>
