@@ -610,6 +610,7 @@ app.post('/gozo/create-request', async (req, res) => {
 
     const distanceKm = req.body.distanceKm || 5; // default 5km if not provided
     const priceInfo = getPredefinedPrice(goodsType, Number(weightKg), Number(distanceKm));
+    const predefinedPrice = priceInfo.total; // alias used by FCM notifications and response below
 
     // Encode distance into goods_type to avoid DB schema changes
     const storedGoodsType = distanceKm ? `${goodsType}_dist_${distanceKm}` : goodsType;
