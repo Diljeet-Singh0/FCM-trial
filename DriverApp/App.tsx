@@ -107,7 +107,7 @@ const translations = {
     waitingCharges: 'Waiting Charges',
     first15Free: 'First 15 min free',
     pricingDetails: 'Pricing Details',
-    estimatedPayout: 'Estimated Payout',
+    estimatedPayout: 'Payout',
     reject: '✕  Reject',
     acceptJob: '✓  Accept Job',
     jobAccepted: '✅ Job accepted! Get ready for pickup.',
@@ -210,7 +210,7 @@ const translations = {
     waitingCharges: 'प्रतीक्षा शुल्क',
     first15Free: 'पहले 15 मिनट मुफ़्त',
     pricingDetails: 'मूल्य विवरण',
-    estimatedPayout: 'अनुमानित कमाई',
+    estimatedPayout: 'कमाई',
     reject: '✕  अस्वीकार',
     acceptJob: '✓  काम स्वीकार करें',
     jobAccepted: '✅ काम स्वीकार! पिकअप के लिए तैयार हों।',
@@ -310,7 +310,7 @@ const translations = {
     waitingCharges: 'ਉਡੀਕ ਖਰਚੇ',
     first15Free: 'ਪਹਿਲੇ 15 ਮਿੰਟ ਮੁਫ਼ਤ',
     pricingDetails: 'ਕੀਮਤ ਵੇਰਵੇ',
-    estimatedPayout: 'ਅੰਦਾਜ਼ਨ ਕਮਾਈ',
+    estimatedPayout: 'ਕਮਾਈ',
     reject: '✕  ਰੱਦ ਕਰੋ',
     acceptJob: '✓  ਕੰਮ ਸਵੀਕਾਰ ਕਰੋ',
     jobAccepted: '✅ ਕੰਮ ਸਵੀਕਾਰ! ਪਿਕਅੱਪ ਲਈ ਤਿਆਰ ਹੋਵੋ।',
@@ -1207,16 +1207,15 @@ const BookingCard = ({
     ? (req.estimatedFreight || req.priceInr) 
     : (req.estimated_freight || req.price_inr);
 
-  const isAuto = Number(weightKg) <= 500;
   const payoutVal = Number(driverPayout) || 0;
-  const payoutDisplay = isAuto ? `₹${payoutVal}-${payoutVal + 50}` : `₹${payoutVal}`;
+  const payoutDisplay = `₹${payoutVal}`;
 
   return (
     <View style={s.bookingCard}>
       <View style={s.cardHeader}>
-        <View style={s.goodsTypeBadge}>
+        <View style={[s.goodsTypeBadge, { flex: 1, marginRight: 12 }]}>
           <Text style={{ fontSize: 16, marginRight: 6 }}>📦</Text>
-          <Text style={s.goodsTypeText}>{goodsType} • {weightKg}kg</Text>
+          <Text style={[s.goodsTypeText, { flexShrink: 1 }]} numberOfLines={1}>{goodsType} • {weightKg}kg</Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>
           <Text style={s.payoutLabel}>{t.yourPayout}</Text>
@@ -1481,9 +1480,7 @@ const ActiveDeliveryView: React.FC<{
             <View style={{ alignItems: 'flex-end' }}>
               <Text style={{ fontSize: 11, color: '#6B7280', marginBottom: 2 }}>{t.yourPayout}</Text>
               <Text style={s.adPriceInline}>
-                {Number(incomingRequest.weightKg) <= 500
-                  ? `₹${incomingRequest.estimatedFreight || incomingRequest.priceInr}-₹${Number(incomingRequest.estimatedFreight || incomingRequest.priceInr) + 50}`
-                  : `₹${incomingRequest.estimatedFreight || incomingRequest.priceInr}`}
+                {`₹${incomingRequest.estimatedFreight || incomingRequest.priceInr}`}
               </Text>
             </View>
           </View>

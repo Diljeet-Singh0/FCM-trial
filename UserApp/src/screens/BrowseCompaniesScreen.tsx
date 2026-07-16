@@ -313,6 +313,10 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [isSearchingCompanies, setIsSearchingCompanies] = useState(false);
 
+  // Search correction state (Google/YouTube-style)
+  const [resolvedQuery, setResolvedQuery] = useState<string | null>(null);
+  const [isExactMatch, setIsExactMatch] = useState(true);
+
   // Custom transporter modal states
   const [showAddModal, setShowAddModal] = useState(false);
   const [customName, setCustomName] = useState('');
@@ -490,10 +494,17 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
 
     // Execute Search — try API first, fallback to client-side filtering
     setIsSearchingCompanies(true);
+    setResolvedQuery(null);
+    setIsExactMatch(true);
     try {
       const res = await searchTransportCompanies(destName, pickupCity, ownerId);
       if (res.success && res.companies.length > 0) {
         setCompanies(res.companies);
+        // Surface resolved query if the backend corrected the search term
+        const resolved = (res as any).resolvedDestination as string | undefined;
+        const exact = (res as any).isExactMatch as boolean | undefined;
+        if (resolved) setResolvedQuery(resolved);
+        setIsExactMatch(exact !== false);
       } else {
         // API search endpoint unavailable or returned 0 results — do client-side matching
         console.log('[BrowseCompaniesScreen] Search API unavailable or empty, falling back to client-side matching');
@@ -515,6 +526,8 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
     setNameQuery(compName);
     setSelectedCompanyName(compName);
     setFilteredCompaniesByName([]);
+    setResolvedQuery(null);
+    setIsExactMatch(true);
 
     const queryLower = compName.toLowerCase();
     const matched = allCompanies.filter(
@@ -524,6 +537,16 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
       }
     );
     setCompanies(matched);
+
+    // Detect if any result is an exact name match
+    const hasExact = matched.some(
+      (c) => c.name.toLowerCase() === queryLower
+    );
+    if (!hasExact && matched.length > 0) {
+      // Fuzzy match — show the closest result name as the resolved term
+      setResolvedQuery(matched[0].name);
+      setIsExactMatch(false);
+    }
   };
 
   const handleClearSearch = () => {
@@ -534,6 +557,8 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
     setCompanies([]);
     setFilteredDestinations([]);
     setFilteredCompaniesByName([]);
+    setResolvedQuery(null);
+    setIsExactMatch(true);
   };
 
   const hasSelection = searchMode === 'route' ? !!selectedDestination : !!selectedCompanyName;
@@ -676,11 +701,34 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
           </View>
         ) : (
           <ScrollView contentContainerStyle={s.resultsScroll} showsVerticalScrollIndicator={false}>
-            {/* Results Header */}
+            {/* Google/YouTube-style correction banner */}
+            {!isExactMatch && resolvedQuery && (
+              <View style={s.correctionBanner}>
+                <Text style={s.correctionBannerText}>
+                  Showing results for:{' '}
+                  <Text style={s.correctionBannerBold}>{resolvedQuery}</Text>
+                </Text>
+                <Text style={s.correctionBannerSub}>
+                  Search instead for:{' '}
+                  <Text
+                    style={s.correctionBannerLink}
+                    onPress={() => {
+                      // Re-run with original user query verbatim
+                      if (searchMode === 'route') handleDestinationSelect(selectedDestination || destinationQuery);
+                      else handleCompanySearch(nameQuery);
+                    }}
+                  >
+                    {searchMode === 'route' ? selectedDestination : selectedCompanyName}
+                  </Text>
+                </Text>
+              </View>
+            )}
+
+            {/* Results count header */}
             <View style={s.resultsMetaRow}>
               <Text style={s.resultsMetaText}>
                 {searchMode === 'route'
-                  ? `${companies.length} companies serve ${pickupCity} → ${selectedDestination}`
+                  ? `${companies.length} companies serve ${pickupCity} → ${resolvedQuery && !isExactMatch ? resolvedQuery : selectedDestination}`
                   : `${companies.length} companies match "${selectedCompanyName}"`
                 }
               </Text>
@@ -957,6 +1005,34 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
 };
 
 const s = StyleSheet.create({
+  correctionBanner: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+    borderRadius: 8,
+    padding: 12,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  correctionBannerText: {
+    fontSize: 14,
+    color: '#D97706',
+  },
+  correctionBannerBold: {
+    fontWeight: 'bold',
+    fontStyle: 'italic',
+  },
+  correctionBannerSub: {
+    fontSize: 12,
+    color: '#78350F',
+    marginTop: 4,
+  },
+  correctionBannerLink: {
+    textDecorationLine: 'underline',
+    fontWeight: 'bold',
+    color: '#2563EB',
+  },
   tabContainer: {
     flexDirection: 'row',
     backgroundColor: '#F3F4F6',

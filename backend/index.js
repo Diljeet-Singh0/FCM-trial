@@ -500,7 +500,7 @@ const getPredefinedPrice = (rawGoodsType, weightKg, explicitDistance = null) => 
     serviceFee: gozoCut,
     estimatedFreight: driverEarning,
     rangeMin: driverEarning,
-    rangeMax: driverEarning + 50,
+    rangeMax: driverEarning,
     breakdown: `₹${userPrice} total, driver earns ₹${driverEarning}, GoZo cut ₹${gozoCut}`,
     currency: 'INR',
   };
@@ -1371,6 +1371,10 @@ app.get('/gozo/transport-companies/search', async (req, res) => {
       }
     }
 
+    // Determine the canonical resolved term and whether it was an exact match
+    const resolvedDestination = matchedCityName || matchedStateName || destTrimmed;
+    const isExactMatch = resolvedDestination.toLowerCase() === destTrimmed.toLowerCase();
+
     const results = [];
 
     for (const c of rawCompanies) {
@@ -1480,7 +1484,7 @@ app.get('/gozo/transport-companies/search', async (req, res) => {
       return a.matchType === 'city' ? -1 : 1;
     });
 
-    res.json({ success: true, companies: results });
+    res.json({ success: true, companies: results, resolvedDestination, isExactMatch });
   } catch (error) {
     console.error('[GoZo] Search error:', error);
     res.status(500).json({ success: false, error: error.message });

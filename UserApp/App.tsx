@@ -684,13 +684,13 @@ const App = () => {
           />
         </View>
 
-        {/* Price Estimate */}
+        {/* Price Breakdown */}
         {priceEstimate && (
           <View style={s.estimateCard}>
-            <Text style={s.estimateTitle}>Estimated Pricing</Text>
+            <Text style={s.estimateTitle}>Pricing</Text>
             <View style={s.estimateRow}>
-              <Text style={s.estimateLabel}>Estimated Freight (Pay to Driver)</Text>
-              <Text style={s.estimateValue}>₹{priceEstimate.rangeMin} - ₹{priceEstimate.rangeMax}</Text>
+              <Text style={s.estimateLabel}>Freight (Pay to Driver)</Text>
+              <Text style={s.estimateValue}>₹{priceEstimate.rangeMin}</Text>
             </View>
             <View style={s.estimateRow}>
               <Text style={s.estimateLabel}>Booking Fee</Text>

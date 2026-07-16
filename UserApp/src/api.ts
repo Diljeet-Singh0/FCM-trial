@@ -268,7 +268,7 @@ export const searchTransportCompanies = async (destination: string, pickupCity?:
     const url = `${API_BASE_URL}/gozo/transport-companies/search?destination=${encodeURIComponent(destination)}${pickupCity ? `&pickup_city=${encodeURIComponent(pickupCity)}` : ''}${ownerId ? `&owner_id=${encodeURIComponent(ownerId)}` : ''}`;
     const response = await fetch(url);
     const data = await safeJsonParse(response);
-    return { success: data.success, companies: data.companies ?? [], error: data.error };
+    return { success: data.success, companies: data.companies ?? [], resolvedDestination: data.resolvedDestination, isExactMatch: data.isExactMatch, error: data.error };
   } catch (error: any) {
     return { success: false, companies: [], error: error.message };
   }

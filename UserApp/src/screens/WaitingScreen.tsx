@@ -160,7 +160,7 @@ const WaitingScreen = ({ onBack, companyName, requestId, onDriverAccepted }: Pro
               <Text style={s.priceTitle}>Pricing details</Text>
             </View>
             <View style={s.priceRow}>
-              <Text style={s.priceLabel}>Estimated Freight Price</Text>
+              <Text style={s.priceLabel}>Freight Price</Text>
               <Text style={[s.priceValue, { color: '#10B981', fontWeight: '800', fontSize: 18 }]}>
                 ₹{request.accepted_price || 'Calculating...'}
               </Text>

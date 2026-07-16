@@ -455,8 +455,8 @@ const BookingScreen = ({ company, onBack, onConfirmBooking, isScheduling = false
               <Text style={s.breakdownVal}>₹50 / 30 min (First 15 min free)</Text>
             </View>
             <View style={s.totalBreakdownBox}>
-              <Text style={s.totalBreakdownLabel}>Estimated Freight</Text>
-              <Text style={s.totalBreakdownValue}>₹{priceRange.rangeMin} - ₹{priceRange.rangeMax}</Text>
+              <Text style={s.totalBreakdownLabel}>Freight Price</Text>
+              <Text style={s.totalBreakdownValue}>₹{priceRange.driverCut}</Text>
             </View>
           </View>
         ) : (
