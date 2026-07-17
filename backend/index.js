@@ -1378,8 +1378,10 @@ app.get('/gozo/transport-companies/search', async (req, res) => {
     const results = [];
 
     for (const c of rawCompanies) {
+      const isCustomTransporter = c.owner_id && owner_id && c.owner_id === owner_id;
+
       // ── Filter by pickup_city if provided ──
-      if (pickup_city) {
+      if (pickup_city && !isCustomTransporter) {
         const pickupLower = pickup_city.trim().toLowerCase();
         const locWords = c.location.toLowerCase().split(/[\s,]+/).filter(Boolean);
         const pickupWords = pickupLower.split(/[\s,]+/).filter(Boolean);
@@ -1420,6 +1422,10 @@ app.get('/gozo/transport-companies/search', async (req, res) => {
             break;
           }
         }
+      }
+
+      if (isCustomTransporter && !matchType) {
+        matchType = 'custom';
       }
 
       if (matchType) {
@@ -1543,7 +1549,7 @@ app.post('/gozo/transport-companies/custom', async (req, res) => {
     const newCompany = {
       id,
       name,
-      location: location || 'Custom Location',
+      location: location || depot_address || 'Custom Location',
       rate_per_kg: rate_per_kg || 0,
       rate_display: rate_per_kg ? `${rate_per_kg}` : '',
       rating: 5.0,
@@ -1551,7 +1557,7 @@ app.post('/gozo/transport-companies/custom', async (req, res) => {
       routes,
       routes_v2,
       depot_address: depot_address || '',
-      description: 'Self-added custom transporter',
+      description: 'Private transporter',
       established: new Date().getFullYear().toString(),
       contact_phone: contact_phone || '',
       experience: '1',

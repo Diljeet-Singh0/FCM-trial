@@ -397,8 +397,13 @@ const App = () => {
         case 'my-requests':
         case 'browse-companies':
         case 'settings':
+        case 'schedule-ride':
+        case 'scheduled-rides':
           setIsScheduling(false);
           setScreen('home');
+          return true;
+        case 'scheduled-ride-detail':
+          setScreen('scheduled-rides');
           return true;
         case 'order-detail':
           setScreen('my-requests');

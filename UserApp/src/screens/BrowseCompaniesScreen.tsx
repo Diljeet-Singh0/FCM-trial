@@ -16,6 +16,8 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchDestinations, searchTransportCompanies, fetchUserProfile, fetchTransportCompanies, addCustomTransportCompany } from '../api';
+import AddressInput from '../components/AddressInput';
+import MapLocationPicker from '../components/MapLocationPicker';
 
 type Company = {
   id: string;
@@ -217,7 +219,11 @@ const CompanyCardItem = ({ company, onSelectCompany }: { company: Company, onSel
       <View style={s.cardBody}>
         {/* Match Type Badge */}
         <View style={s.badgeRow}>
-          {isExactCity ? (
+          {company.id && company.id.startsWith('custom-') ? (
+            <View style={[s.exactBadge, { backgroundColor: '#EEF2F6' }]}>
+              <Text style={[s.exactBadgeText, { color: '#475569' }]}>🔒 Private Transporter</Text>
+            </View>
+          ) : isExactCity ? (
             <View style={s.exactBadge}>
               <Text style={s.exactBadgeText}>🎯 Exact City Match</Text>
             </View>
@@ -243,10 +249,16 @@ const CompanyCardItem = ({ company, onSelectCompany }: { company: Company, onSel
               <Text style={s.companyLocation}>{company.location}</Text>
             </View>
           </View>
-          <View style={s.rateBadge}>
-            <Text style={s.rateText}>₹{priceMin === priceMax ? priceMin : `${priceMin}-${priceMax}`}</Text>
-            <Text style={s.rateUnit}>/kg</Text>
-          </View>
+          {company.id && company.id.startsWith('custom-') ? (
+            <View style={[s.rateBadge, { backgroundColor: '#F3F4F6' }]}>
+              <Text style={[s.rateText, { color: '#4B5563', fontSize: 13 }]}>Private</Text>
+            </View>
+          ) : (
+            <View style={s.rateBadge}>
+              <Text style={s.rateText}>₹{priceMin === priceMax ? priceMin : `${priceMin}-${priceMax}`}</Text>
+              <Text style={s.rateUnit}>/kg</Text>
+            </View>
+          )}
         </View>
 
         <View style={s.ratingRow}>
@@ -265,18 +277,20 @@ const CompanyCardItem = ({ company, onSelectCompany }: { company: Company, onSel
           </Text>
         </View>
 
-        <View style={s.routesRow}>
-          {company.routes.slice(0, 3).map((r, i) => (
-            <View key={i} style={s.routeChip}>
-              <Text style={s.routeChipText}>{r}</Text>
-            </View>
-          ))}
-          {company.routes.length > 3 && (
-            <View style={s.moreChip}>
-              <Text style={s.moreChipText}>+{company.routes.length - 3}</Text>
-            </View>
-          )}
-        </View>
+        {company.routes && company.routes.length > 0 ? (
+          <View style={s.routesRow}>
+            {company.routes.slice(0, 3).map((r, i) => (
+              <View key={i} style={s.routeChip}>
+                <Text style={s.routeChipText}>{r}</Text>
+              </View>
+            ))}
+            {company.routes.length > 3 && (
+              <View style={s.moreChip}>
+                <Text style={s.moreChipText}>+{company.routes.length - 3}</Text>
+              </View>
+            )}
+          </View>
+        ) : null}
 
         <View style={s.cardFooter}>
           <Text style={s.estText}>Est. {company.established}</Text>
@@ -326,6 +340,7 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
   const [customRate, setCustomRate] = useState('');
   const [customDeliveryTime, setCustomDeliveryTime] = useState('2-5 days');
   const [isAdding, setIsAdding] = useState(false);
+  const [showDepotMapPicker, setShowDepotMapPicker] = useState(false);
 
   const handleOpenAddModal = () => {
     setCustomName('');
@@ -352,10 +367,6 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
       const res = await addCustomTransportCompany(ownerId, {
         name: customName.trim(),
         depotAddress: customDepot.trim(),
-        contactPhone: customPhone.trim() || undefined,
-        destination: customDestination.trim() || undefined,
-        deliveryTime: customDeliveryTime.trim() || undefined,
-        ratePerKg: Number(customRate) || 0,
       });
 
       if (res.success && res.company) {
@@ -921,61 +932,27 @@ const BrowseCompaniesScreen = ({ onBack, onSelectCompany, ownerId }: Props) => {
 
               <View style={s.formField}>
                 <Text style={s.fieldLabel}>Depot / Shipment Address <Text style={{ color: '#EF4444' }}>*</Text></Text>
-                <TextInput
-                  style={s.formInput}
+                <AddressInput
                   placeholder="e.g. Focal Point, Jalandhar"
-                  placeholderTextColor="#9CA3AF"
                   value={customDepot}
                   onChangeText={setCustomDepot}
-                />
-              </View>
-
-              <View style={s.formField}>
-                <Text style={s.fieldLabel}>Delivery Route / Destination City</Text>
-                <TextInput
-                  style={s.formInput}
-                  placeholder="e.g. Ludhiana, Kolkata"
-                  placeholderTextColor="#9CA3AF"
-                  value={customDestination}
-                  onChangeText={setCustomDestination}
-                />
-              </View>
-
-              <View style={s.formField}>
-                <Text style={s.fieldLabel}>Contact Phone Number</Text>
-                <TextInput
-                  style={s.formInput}
-                  placeholder="e.g. 9876543210"
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="phone-pad"
-                  value={customPhone}
-                  onChangeText={setCustomPhone}
-                />
-              </View>
-
-              <View style={s.formField}>
-                <Text style={s.fieldLabel}>Estimated Delivery Days</Text>
-                <TextInput
-                  style={s.formInput}
-                  placeholder="e.g. 2-5 days"
-                  placeholderTextColor="#9CA3AF"
-                  value={customDeliveryTime}
-                  onChangeText={setCustomDeliveryTime}
-                />
-              </View>
-
-              <View style={s.formField}>
-                <Text style={s.fieldLabel}>Custom Rate (₹ per Kg) - Optional</Text>
-                <TextInput
-                  style={s.formInput}
-                  placeholder="e.g. 5"
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="numeric"
-                  value={customRate}
-                  onChangeText={setCustomRate}
+                  dotColor="#10B981"
+                  showLocationButton
+                  onPickFromMap={() => setShowDepotMapPicker(true)}
                 />
               </View>
             </ScrollView>
+
+            {/* Map picker for depot address */}
+            <MapLocationPicker
+              visible={showDepotMapPicker}
+              onClose={() => setShowDepotMapPicker(false)}
+              onConfirm={(loc) => {
+                setCustomDepot(loc.address);
+                setShowDepotMapPicker(false);
+              }}
+              initialAddress={customDepot}
+            />
 
             <View style={s.modalActions}>
               <TouchableOpacity
