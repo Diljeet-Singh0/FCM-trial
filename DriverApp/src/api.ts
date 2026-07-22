@@ -120,7 +120,7 @@ export const fetchActiveRequests = async () => {
 export const updateTripStatus = async (
   requestId: string,
   transporterId: string,
-  status: 'picked_up' | 'on_the_way' | 'completed',
+  status: 'picked_up' | 'on_the_way',
 ) => {
   try {
     const response = await fetch(`${API_BASE_URL}/gozo/update-trip-status`, {

@@ -803,7 +803,7 @@ const App = () => {
     } catch (err) { Alert.alert(t.error, t.connectionFailed); }
   };
 
-  const handleUpdateStatus = async (status: 'picked_up' | 'on_the_way' | 'completed') => {
+  const handleUpdateStatus = async (status: 'picked_up' | 'on_the_way') => {
     if (!incomingRequest || !transporterId) return;
 
     let setter: ((val: boolean) => void) | null = null;
@@ -1068,29 +1068,7 @@ const App = () => {
                 />
               )}
             </Stack.Screen>
-            <Stack.Screen name="Navigation">
-              {(props) => (
-                <NavigationScreen
-                  {...props}
-                  // @ts-ignore
-                  requestId={incomingRequest?.requestId || ''}
-                  transporterId={transporterId || ''}
-                  pickupAddress={incomingRequest?.pickupAddress || ''}
-                  dropAddress={incomingRequest?.dropAddress || ''}
-                  goodsType={incomingRequest?.goodsType || ''}
-                  weightKg={Number(incomingRequest?.weightKg || 0)}
-                  priceInr={Number(incomingRequest?.priceInr || 0)}
-                  status={tripStatus}
-                  onStatusChange={(newStatus: any) => {
-                    if (newStatus === 'completed') {
-                      handleUpdateStatus('completed');
-                    } else {
-                      setTripStatus(newStatus);
-                    }
-                  }}
-                />
-              )}
-            </Stack.Screen>
+            <Stack.Screen name="Navigation" component={NavigationScreen} />
           </Stack.Navigator>
         </NavigationContainer>
       </SafeAreaProvider>

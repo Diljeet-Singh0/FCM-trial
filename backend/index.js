@@ -2143,6 +2143,12 @@ app.post('/gozo/upload-builty', async (req, res) => {
       return res.status(403).json({ success: false, error: 'This request is not assigned to you' });
     }
 
+    // Idempotency guard: if already completed, skip all writes and FCM
+    if (requestRow.status === 'completed') {
+      console.log(`[GoZo] upload-builty called but trip already completed: requestId=${requestId}`);
+      return res.json({ success: true, alreadyCompleted: true });
+    }
+
     // Store builty image and mark as completed
     const { error: updateError } = await supabase
       .from('requests')
